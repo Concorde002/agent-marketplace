@@ -49,7 +49,7 @@ Payments next: wire `POST /v1/orders/{id}/settle` once authentication and orders
 
 ### Server configuration
 
-`PORT` (default 8080), `STRIPE_SECRET_KEY` (sandbox only), `STRIPE_WEBHOOK_SECRET` (enables the webhook route), `DB_CONNECTION` (login role in `marketplace_app`), `DB_CA_FILE` (Supabase CA, `prod-ca-2021.crt`). TLS to the database is always verified; `DB_SSL=disable` is accepted only for a database on localhost, and `sslmode` in `DB_CONNECTION` is refused because node-postgres would let it override the CA. Dependencies added: `pg` 8.23.1 (runtime), `@types/pg` 8.23.1 and `@electric-sql/pglite` 0.5.13 (tests). `tsconfig.json` sets `skipLibCheck` because PGlite's published types reference `@types/emscripten`, which it does not ship.
+`PORT` (default 8080), `STRIPE_SECRET_KEY` (sandbox only), `STRIPE_WEBHOOK_SECRET` (enables the webhook route), `DB_CONNECTION` (login role in `marketplace_app`), `DB_CA_FILE` (Supabase CA, `prod-ca-2021.crt`), `OBSERVER_TOKEN` (read-only token for `/observer/ws`; never a bot or operator token). TLS to the database is always verified; `DB_SSL=disable` is accepted only for a database on localhost, and `sslmode` in `DB_CONNECTION` is refused because node-postgres would let it override the CA. Dependencies added: `pg` 8.23.1 (runtime), `@types/pg` 8.23.1 and `@electric-sql/pglite` 0.5.13 (tests). `tsconfig.json` sets `skipLibCheck` because PGlite's published types reference `@types/emscripten`, which it does not ship.
 
 ### Database (Supabase Postgres)
 
@@ -75,6 +75,12 @@ npm run payments:operator -- smoke-charge --customer <cus_…> --payment-method 
 ```
 
 The printed credential record belongs in server-side storage, not in Git.
+
+### Observer log stream
+
+`GET /observer/ws` streams one human-readable log per endpoint call to WebSocket clients, for the observer dashboard in the [three-minute demo handoff](../handoffs/2026-10-30-three-minute-demo.md). Message kinds, fields, operations and redaction rules: [observer-stream.md](../observer-stream.md). Clients need `OBSERVER_TOKEN` (sent as a subprotocol); without it only loopback clients connect, which admits nobody behind Cloud Run. The token is read-only and must never be given to a bot. `MVP_LIMIT`: fan-out is in-process, so run Cloud Run with `--max-instances=1` for the demo.
+
+Checked locally (2026-10-30), disposable fixtures only: `tests/platform/observer.test.ts` adds 11 tests on PGlite and loopback sockets (one log per call in order, MCP correlation, redaction of budgets/floors/tokens/headers, refusals, token and loopback gating, broadcast and backlog, read-only stream). Each of 9 safeguards was removed one at a time and a test failed each time. `npm run check`: 333 tests, 329 pass, 0 fail, 4 TODO, against 322/318 on main `cd23842`. `node dist/src/server.js` with `OBSERVER_TOKEN`: unauthenticated upgrade refused with 401; an authorised client received `hello` and one log per HTTP call. Not verified hosted.
 
 ## Verification
 

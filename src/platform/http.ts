@@ -9,6 +9,7 @@ import { PaymentRefusedError, PaymentUnavailableError } from "../payments/settle
 import { IdentityError, authenticate, registerIdentity } from "./identity.js";
 import { PlatformError, type Database } from "./database.js";
 import { Marketplace } from "./marketplace.js";
+import { observe, type ObserverBus } from "./observer.js";
 
 export interface PlatformHttp {
   handle(request: Request): Promise<Response>;
@@ -16,7 +17,7 @@ export interface PlatformHttp {
 }
 
 /** HTTP and MCP use the same authenticated route implementation, without a network self-call. */
-export function createPlatformHttp(db: Database, market: Marketplace, options: { now?: () => Date; paymentConfigured?: boolean } = {}): PlatformHttp {
+export function createPlatformHttp(db: Database, market: Marketplace, options: { now?: () => Date; paymentConfigured?: boolean; observer?: ObserverBus } = {}): PlatformHttp {
   const now = options.now ?? (() => new Date());
   const supported = MCP_TOOLS.filter((tool) => !["start_purchase", "purchase_status", "supplier_status", "supplier_listener_tick", "report_pending"].includes(tool.name));
   const mcp = createMcpHandler(createMcpBackend({ clientForToken: (token) => new PlatformClient({
@@ -24,12 +25,22 @@ export function createPlatformHttp(db: Database, market: Marketplace, options: {
     fetchImpl: (input, init) => handle(new Request(input, init)),
   }) }), { tools: supported, instructions: LIVE_AGENT_INSTRUCTIONS });
 
+  /** Every call, including the internal ones an MCP tool makes, emits one observer log. */
   async function handle(request: Request): Promise<Response> {
+    return observe(options.observer, request, "http", async (observed) => {
+      let actor: ActorContext | undefined;
+      const response = await dispatch(observed, (authenticated) => { actor = authenticated; });
+      return { response, actor };
+    });
+  }
+
+  async function dispatch(request: Request, onActor: (actor: ActorContext) => void): Promise<Response> {
     let actor: ActorContext | undefined;
     try {
       const bearer = /^Bearer ([^\s]+)$/i.exec(request.headers.get("authorization") ?? "")?.[1];
       if (!bearer) throw new IdentityError(401, "INVALID_CREDENTIAL");
       actor = await authenticate(db, bearer, now());
+      onActor(actor);
       const url = new URL(request.url);
       if (url.pathname === "/mcp") {
         if (request.method !== "POST") return methodNotAllowed("POST");

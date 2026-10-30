@@ -36,6 +36,10 @@ Each owner tests its actual module with disposable fixtures in `tests/platform/`
 
 Use `npm run test:platform`, `npm run test:agents`, `npm run test:sourcing`, and `npm run test:e2e`. All compile the full project so type-level interface drift fails early. Initial TODOs must become substantive tests as features arrive; TODOs are not independent verification.
 
+## Observer stream
+
+Platform serves `GET /observer/ws`, a read-only WebSocket for the observer dashboard: one `log` message per endpoint call, plus `hello` and `dropped` ([observer-stream.md](observer-stream.md)). It is an execution trace, not authoritative state: dashboards read order and payment results from the backend. Bots must not connect to it or receive `OBSERVER_TOKEN`. New operations or fields are added by the platform owner as backward-compatible additions to message version `v: 1`.
+
 ## Changing a boundary
 
 Propose the required fields/signature/read route in a PR or issue. Platform owner updates contracts and API description; affected owner updates its consumer in the same coordinated increment. Keep main compiling. This draft deliberately does not pretend that persistence, identity verification, JSON schemas, and event delivery have already been implemented.
