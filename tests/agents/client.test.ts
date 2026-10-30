@@ -6,6 +6,7 @@ import {
   type PlatformClientOptions,
 } from "../../src/agents/client.js";
 import type { Offer, SourcingRequest } from "../../src/contracts.js";
+import type { AgentAssessment } from "../../src/sourcing/assessment.js";
 import {
   createFakePlatform,
   defaultBuyerRegistration,
@@ -606,4 +607,75 @@ test("every fake response is marked as a test double", async () => {
   } finally {
     await fake.close();
   }
+});
+
+test("live evidence wrappers encode scoped paths, forward auth and send direct bodies", async () => {
+  const calls: { url: string; method: string; headers: Headers; body: unknown }[] = [];
+  const result = { fixture: "opaque platform response" };
+  const client = new PlatformClient({
+    baseUrl: "https://platform.example/",
+    token: "wrapper-fixture-token",
+    fetchImpl: async (input, init) => {
+      calls.push({
+        url: String(input),
+        method: init?.method ?? "GET",
+        headers: new Headers(init?.headers),
+        body: typeof init?.body === "string" ? JSON.parse(init.body) as unknown : undefined,
+      });
+      return Response.json(result);
+    },
+  });
+  const discoveryId = "disc/one:run?";
+  const sourceId = "disc/one:source-1#text";
+  const assessment: AgentAssessment = { discoveryId, buyerNoticeNumber: "123456-2026", candidates: [] };
+  assert.deepEqual(await client.getMyParticipant(), result);
+  assert.deepEqual(await client.searchBuyerNotices("office equipment", 5), result);
+  assert.deepEqual(await client.searchBuyerNotices("desks"), result);
+  assert.deepEqual(await client.getDiscoveryEvidence(discoveryId), result);
+  assert.deepEqual(await client.readDiscoverySource(discoveryId, sourceId, { offset: 0, limit: 8000 }), result);
+  assert.deepEqual(await client.readDiscoverySource(discoveryId, sourceId), result);
+  assert.deepEqual(await client.readDiscoverySource(discoveryId, sourceId, { limit: 1 }), result);
+  assert.deepEqual(await client.readDiscoverySource(discoveryId, sourceId, { offset: 12 }), result);
+  assert.deepEqual(await client.submitDiscoveryAssessment(discoveryId, assessment), result);
+  assert.deepEqual(await client.resolveDiscoveryParticipants(discoveryId), result);
+  const prefix = "/v1/discoveries/disc%2Fone%3Arun%3F";
+  const sourcePath = `${prefix}/sources/disc%2Fone%3Asource-1%23text`;
+  assert.deepEqual(calls.map(({ url, method, body }) => [url.replace("https://platform.example", ""), method, body]), [
+    ["/v1/me", "GET", undefined],
+    ["/v1/sources/buyer-notices/search", "POST", { query: "office equipment", limit: 5 }],
+    ["/v1/sources/buyer-notices/search", "POST", { query: "desks" }],
+    [`${prefix}/evidence`, "GET", undefined],
+    [`${sourcePath}?offset=0&limit=8000`, "GET", undefined],
+    [sourcePath, "GET", undefined],
+    [`${sourcePath}?limit=1`, "GET", undefined],
+    [`${sourcePath}?offset=12`, "GET", undefined],
+    [`${prefix}/assessments`, "POST", assessment],
+    [`${prefix}/resolve`, "POST", {}],
+  ]);
+  for (const call of calls) {
+    assert.equal(call.headers.get("authorization"), "Bearer wrapper-fixture-token");
+    assert.equal(call.headers.has("idempotency-key"), call.method === "POST");
+  }
+});
+
+test("assessment wrapper retries with the same body and key, scoped by discovery", async () => {
+  const calls: { url: string; key: string | null; body: unknown }[] = [];
+  const client = new PlatformClient({
+    baseUrl: "https://platform.example",
+    token: "retry-fixture-token",
+    retry: { attempts: 2, baseDelayMs: 0 },
+    sleep: async () => {},
+    fetchImpl: async (input, init) => {
+      calls.push({ url: String(input), key: new Headers(init?.headers).get("idempotency-key"), body: init?.body });
+      return calls.length === 1 ? Response.json({ error: "UNAVAILABLE" }, { status: 503 }) : Response.json({ status: "complete" });
+    },
+  });
+  const assessment: AgentAssessment = { discoveryId: "disc-1", buyerNoticeNumber: "123456-2026", candidates: [] };
+  await client.submitDiscoveryAssessment("disc-1", assessment);
+  await client.submitDiscoveryAssessment("disc-2", assessment);
+  assert.equal(calls.length, 3);
+  assert.ok(calls[0]?.key);
+  assert.deepEqual(calls[0], calls[1]);
+  assert.notEqual(calls[0]?.key, calls[2]?.key);
+  assert.equal(calls[0]?.body, JSON.stringify(assessment));
 });

@@ -16,6 +16,7 @@ import type {
   SourcingRequest,
 } from "../../src/contracts.js";
 import { createMcpHandler } from "../../src/mcp/gateway.js";
+import type { AgentAssessment } from "../../src/sourcing/assessment.js";
 import { createMcpBackend } from "../../src/mcp/backend.js";
 import type { PlatformToolClient } from "../../src/mcp/backend.js";
 import type {
@@ -92,6 +93,37 @@ class StubBackend implements McpToolBackend {
   async getDiscovery(token: string, discoveryId: string): Promise<DiscoveryResult> {
     this.record("getDiscovery", token, discoveryId);
     return sampleDiscovery();
+  }
+
+  async getMyParticipant(token: string): Promise<unknown> {
+    this.record("getMyParticipant", token);
+    return { participantId: "buyer_1" };
+  }
+
+  async searchBuyerNotices(token: string, query: string, limit?: number): Promise<unknown> {
+    this.record("searchBuyerNotices", token, query, limit);
+    return { notices: [] };
+  }
+
+  async getDiscoveryEvidence(token: string, discoveryId: string): Promise<unknown> {
+    this.record("getDiscoveryEvidence", token, discoveryId);
+    return { sources: [] };
+  }
+
+  async readDiscoverySource(token: string, discoveryId: string, sourceId: string,
+    options?: { offset?: number; limit?: number }): Promise<unknown> {
+    this.record("readDiscoverySource", token, discoveryId, sourceId, options);
+    return { text: "Supplier fixture evidence" };
+  }
+
+  async submitDiscoveryAssessment(token: string, discoveryId: string, assessment: AgentAssessment): Promise<DiscoveryResult> {
+    this.record("submitDiscoveryAssessment", token, discoveryId, assessment);
+    return sampleDiscovery();
+  }
+
+  async resolveDiscoveryParticipants(token: string, discoveryId: string): Promise<unknown> {
+    this.record("resolveDiscoveryParticipants", token, discoveryId);
+    return { participants: [] };
   }
 
   async requestQuote(
@@ -278,6 +310,12 @@ const EXPECTED_TOOLS = [
   "get_offer",
   "supplier_listener_tick",
   "report_pending",
+  "get_my_participant",
+  "search_buyer_notices",
+  "get_discovery_evidence",
+  "read_discovery_source",
+  "submit_discovery_assessment",
+  "resolve_discovery_participants",
 ] as const;
 
 test("initialize handshake returns protocol version, tools capability, and server info", async () => {
@@ -699,3 +737,192 @@ test("mcp backend selects the client by bearer token and reports missing runtime
   assert.deepEqual(ticked, [TOKEN]);
 });
 
+function sampleAssessment(): AgentAssessment {
+  return {
+    discoveryId: "disc_1",
+    buyerNoticeNumber: "123456-2026",
+    candidates: [{
+      company: { name: "Supplier Fixture", officialDomain: "supplier.example", publicOrganizationId: "fixture-id" },
+      identity: { sourceId: "disc_1:source-1", quotation: "Supplier Fixture", organizationIdQuotation: "Supplier Fixture fixture-id" },
+      claims: [
+        { requirementKey: "certificate", outcome: "match", sourceId: "disc_1:source-1", quotation: "FSC certificate" },
+        { requirementKey: "unknown", outcome: "unknown" },
+        { requirementKey: "mismatch", outcome: "mismatch", sourceId: "disc_1:source-1", quotation: "No capacity" },
+      ],
+    }],
+  };
+}
+
+async function callTool(handler: ReturnType<typeof createMcpHandler>, name: string, args: unknown, token = TOKEN): Promise<RpcEnvelope> {
+  return readRpc(await handler(post({ jsonrpc: "2.0", id: 100, method: "tools/call", params: { name, arguments: args } }, token)));
+}
+
+test("live evidence tools forward validated arguments and only the authenticated header token", async () => {
+  const backend = new StubBackend();
+  const handler = createMcpHandler(backend);
+  const assessment = sampleAssessment();
+  const cases: [string, Record<string, unknown>, string, unknown[]][] = [
+    ["get_my_participant", {}, "getMyParticipant", []],
+    ["search_buyer_notices", { query: "desks", limit: 5 }, "searchBuyerNotices", ["desks", 5]],
+    ["search_buyer_notices", { query: "desks" }, "searchBuyerNotices", ["desks", undefined]],
+    ["get_discovery_evidence", { discoveryId: "disc_1" }, "getDiscoveryEvidence", ["disc_1"]],
+    ["read_discovery_source", { discoveryId: "disc_1", sourceId: "disc_1:source-1", offset: 0, limit: 8000 },
+      "readDiscoverySource", ["disc_1", "disc_1:source-1", { offset: 0, limit: 8000 }]],
+    ["read_discovery_source", { discoveryId: "disc_1", sourceId: "disc_1:source-1" },
+      "readDiscoverySource", ["disc_1", "disc_1:source-1", undefined]],
+    ["read_discovery_source", { discoveryId: "disc_1", sourceId: "disc_1:source-1", limit: 1 },
+      "readDiscoverySource", ["disc_1", "disc_1:source-1", { limit: 1 }]],
+    ["submit_discovery_assessment", { discoveryId: "disc_1", assessment }, "submitDiscoveryAssessment", ["disc_1", assessment]],
+    ["resolve_discovery_participants", { discoveryId: "disc_1" }, "resolveDiscoveryParticipants", ["disc_1"]],
+  ];
+  for (const [name, args, method, forwarded] of cases) {
+    const token = `${TOKEN}-${backend.calls.length}`;
+    const body = await callTool(handler, name, args, token);
+    assert.equal(body.error, undefined, name);
+    assert.equal(toolCallResult(body).isError, false, name);
+    assert.deepEqual(backend.calls.at(-1), { method, token, args: forwarded });
+  }
+  assert.equal(backend.calls.length, cases.length);
+});
+
+test("live evidence tools reject out-of-bounds fields and caller authority before dispatch", async () => {
+  const backend = new StubBackend();
+  const handler = createMcpHandler(backend);
+  const cases: [string, Record<string, unknown>][] = [
+    ["get_my_participant", { token: "forged" }],
+    ["get_my_participant", { actor: { participantId: "forged" } }],
+    ["search_buyer_notices", {}],
+    ["search_buyer_notices", { query: "" }],
+    ["search_buyer_notices", { query: "x".repeat(1501) }],
+    ...[0, 6, 1.5, "2"].map((limit): [string, Record<string, unknown>] => ["search_buyer_notices", { query: "desks", limit }]),
+    ["get_discovery_evidence", { discoveryId: "disc_1", actorId: "forged" }],
+    ["get_discovery_evidence", { discoveryId: "" }],
+    ["read_discovery_source", { discoveryId: "disc_1" }],
+    ...[-1, 0.5, "0"].map((offset): [string, Record<string, unknown>] => ["read_discovery_source", { discoveryId: "disc_1", sourceId: "disc_1:source-1", offset }]),
+    ...[0, 8001, 1.5, "1"].map((limit): [string, Record<string, unknown>] => ["read_discovery_source", { discoveryId: "disc_1", sourceId: "disc_1:source-1", limit }]),
+    ["resolve_discovery_participants", { discoveryId: "disc_1", supplierId: "forged" }],
+  ];
+  for (const [name, args] of cases) {
+    const body = await callTool(handler, name, args);
+    assert.equal(body.error?.code, -32602, `${name}: ${JSON.stringify(args)}`);
+  }
+  assert.equal(backend.calls.length, 0);
+});
+
+test("assessment schema rejects extra actor, run, source hash and body metadata at every level", async () => {
+  const backend = new StubBackend();
+  const handler = createMcpHandler(backend);
+  const base = sampleAssessment();
+  const candidate = base.candidates[0]!;
+  const invalid: unknown[] = [
+    { ...base, candidates: Array.from({ length: 6 }, () => candidate) },
+    { ...base, candidates: [{ ...candidate, claims: Array.from({ length: 101 }, () => candidate.claims[0]) }] },
+    { ...base, buyerNoticeNumber: "arbitrary-notice" },
+    { ...base, candidates: [{ ...candidate, claims: [{ requirementKey: "key", outcome: "maybe" }] }] },
+    { ...base, candidates: [{ ...candidate, identity: { quotation: "missing source" } }] },
+    { ...base, candidates: [{ ...candidate, company: { officialDomain: "supplier.example" } }] },
+  ];
+  for (const key of ["actor", "actorId", "token", "runId", "sourceHash", "contentHash", "body", "metadata"]) {
+    invalid.push({ ...base, [key]: "forged" });
+    invalid.push({ ...base, candidates: [{ ...candidate, [key]: "forged" }] });
+    invalid.push({ ...base, candidates: [{ ...candidate, company: { ...candidate.company, [key]: "forged" } }] });
+    invalid.push({ ...base, candidates: [{ ...candidate, identity: { ...candidate.identity, [key]: "forged" } }] });
+    invalid.push({ ...base, candidates: [{ ...candidate, claims: [{ ...candidate.claims[0], [key]: "forged" }] }] });
+    const topLevel = await callTool(handler, "submit_discovery_assessment", { discoveryId: "disc_1", assessment: base, [key]: "forged" });
+    assert.equal(topLevel.error?.code, -32602, key);
+  }
+  for (const assessment of invalid) {
+    const body = await callTool(handler, "submit_discovery_assessment", { discoveryId: "disc_1", assessment });
+    assert.equal(body.error?.code, -32602, JSON.stringify(assessment));
+  }
+  assert.equal(backend.calls.length, 0);
+  const boundary = { ...base, candidates: Array.from({ length: 5 }, () => ({ ...candidate,
+    claims: Array.from({ length: 100 }, () => ({ requirementKey: "unknown", outcome: "unknown" })),
+  })) };
+  assert.equal(toolCallResult(await callTool(handler, "submit_discovery_assessment", { discoveryId: "disc_1", assessment: boundary })).isError, false);
+});
+
+test("create_request accepts an optional TED publication number and rejects malformed numbers", async () => {
+  const backend = new StubBackend();
+  const handler = createMcpHandler(backend);
+  const { id: _id, buyerId: _buyerId, ...input } = sampleRequest();
+  const args = { ...input, buyerNoticeNumber: "123456-2026" };
+  assert.equal(toolCallResult(await callTool(handler, "create_request", args)).isError, false);
+  assert.deepEqual(backend.calls[0]?.args, [args]);
+  for (const buyerNoticeNumber of ["", "123456", "123456-2100", "12345678-2026", "x-2026", 123456]) {
+    assert.equal((await callTool(handler, "create_request", { ...input, buyerNoticeNumber })).error?.code, -32602);
+  }
+  assert.equal(backend.calls.length, 1);
+});
+
+function baseToolClient(): PlatformToolClient {
+  const unused = (): never => { throw new Error("unexpected capability call"); };
+  return {
+    registerParticipant: unused, createRequest: unused, startDiscovery: unused, getDiscovery: unused,
+    requestQuote: unused, submitOffer: unused, acceptOffer: unused, settleOrder: unused, getOrder: unused,
+    listEvents: unused, getRequest: unused, getOffer: unused,
+  };
+}
+
+const LIVE_TOOL_ARGS: [string, Record<string, unknown>][] = [
+  ["get_my_participant", {}],
+  ["search_buyer_notices", { query: "desks", limit: 1 }],
+  ["get_discovery_evidence", { discoveryId: "disc_1" }],
+  ["read_discovery_source", { discoveryId: "disc_1", sourceId: "disc_1:source-1", offset: 0, limit: 1 }],
+  ["submit_discovery_assessment", { discoveryId: "disc_1", assessment: sampleAssessment() }],
+  ["resolve_discovery_participants", { discoveryId: "disc_1" }],
+];
+
+test("absent optional capabilities return TOOL_UNAVAILABLE on both backend surfaces", async () => {
+  const selectedTokens: string[] = [];
+  const adapted = createMcpBackend({ clientForToken: (token) => { selectedTokens.push(token); return baseToolClient(); } });
+  const stub = new StubBackend();
+  // Deliberately omit every new capability, as an existing gateway backend would.
+  const legacy: McpToolBackend = {
+    registerParticipant: stub.registerParticipant.bind(stub), createRequest: stub.createRequest.bind(stub),
+    startDiscovery: stub.startDiscovery.bind(stub), getDiscovery: stub.getDiscovery.bind(stub),
+    requestQuote: stub.requestQuote.bind(stub), submitOffer: stub.submitOffer.bind(stub),
+    acceptOffer: stub.acceptOffer.bind(stub), settleOrder: stub.settleOrder.bind(stub), getOrder: stub.getOrder.bind(stub),
+    listEvents: stub.listEvents.bind(stub), getRequest: stub.getRequest.bind(stub), getOffer: stub.getOffer.bind(stub),
+    supplierListenerTick: stub.supplierListenerTick.bind(stub), reportPending: stub.reportPending.bind(stub),
+    startPurchase: stub.startPurchase.bind(stub), purchaseStatus: stub.purchaseStatus.bind(stub), supplierStatus: stub.supplierStatus.bind(stub),
+  };
+  for (const backend of [legacy, adapted]) {
+    const handler = createMcpHandler(backend);
+    for (const [name, args] of LIVE_TOOL_ARGS) {
+      const body = await callTool(handler, name, args);
+      assert.equal(body.error, undefined, name);
+      const result = toolCallResult(body);
+      assert.equal(result.isError, true, name);
+      assert.deepEqual((result.structuredContent as { error: string }).error, "TOOL_UNAVAILABLE", name);
+      assert.match(toolCallText(result), new RegExp(name));
+    }
+  }
+  assert.deepEqual(selectedTokens, Array.from({ length: 6 }, () => TOKEN));
+});
+
+test("optional backend adapter preserves client method binding and token-scoped inputs", async () => {
+  const calls: unknown[][] = [];
+  const tokens: string[] = [];
+  const client = Object.assign(baseToolClient(), {
+    getMyParticipant: async function () { assert.equal(this, client); calls.push([]); return { participantId: "buyer_1" }; },
+    searchBuyerNotices: async function (query: string, limit?: number) { assert.equal(this, client); calls.push([query, limit]); return { notices: [] }; },
+    getDiscoveryEvidence: async function (id: string) { assert.equal(this, client); calls.push([id]); return { sources: [] }; },
+    readDiscoverySource: async function (id: string, sourceId: string, options?: { offset?: number; limit?: number }) {
+      assert.equal(this, client); calls.push([id, sourceId, options]); return { text: "fixture" };
+    },
+    submitDiscoveryAssessment: async function (id: string, assessment: AgentAssessment) {
+      assert.equal(this, client); calls.push([id, assessment]); return sampleDiscovery();
+    },
+    resolveDiscoveryParticipants: async function (id: string) { assert.equal(this, client); calls.push([id]); return { participants: [] }; },
+  });
+  const handler = createMcpHandler(createMcpBackend({ clientForToken: (token) => { tokens.push(token); return client; } }));
+  for (const [name, args] of LIVE_TOOL_ARGS) {
+    const body = await callTool(handler, name, args, `${TOKEN}-${tokens.length}`);
+    assert.equal(body.error, undefined, name);
+    assert.equal(toolCallResult(body).isError, false, name);
+  }
+  assert.deepEqual(tokens, Array.from({ length: 6 }, (_, i) => `${TOKEN}-${i}`));
+  assert.deepEqual(calls, [[], ["desks", 1], ["disc_1"], ["disc_1", "disc_1:source-1", { offset: 0, limit: 1 }],
+    ["disc_1", sampleAssessment()], ["disc_1"]]);
+});

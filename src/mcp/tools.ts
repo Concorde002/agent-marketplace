@@ -1,4 +1,6 @@
 import type { RegistrationInput } from "../contracts.js";
+import type { AgentAssessment } from "../sourcing/assessment.js";
+import { requireCapability } from "./backend.js";
 import type { CreateRequestInput, McpToolBackend, PurchaseToolInput, SubmitOfferInput } from "./gateway.js";
 
 /**
@@ -155,6 +157,8 @@ const registerParticipantSchema: JsonSchema = {
   },
 };
 
+const publicationNumberSchema: JsonSchema = { type: "string", pattern: "^[0-9]{1,7}-(19|20)[0-9]{2}$" };
+
 const createRequestSchema: JsonSchema = {
   type: "object",
   additionalProperties: false,
@@ -172,6 +176,7 @@ const createRequestSchema: JsonSchema = {
   properties: {
     category: { type: "string", minLength: 1, maxLength: 128 },
     description: { type: "string", minLength: 1, maxLength: 4000 },
+    buyerNoticeNumber: publicationNumberSchema,
     quantity: { type: "number", exclusiveMinimum: 0 },
     unit: { type: "string", minLength: 1, maxLength: 64 },
     destination: { type: "string", minLength: 1, maxLength: 500 },
@@ -221,6 +226,64 @@ const submitOfferSchema: JsonSchema = {
 };
 
 const idSchema: JsonSchema = { type: "string", minLength: 1, maxLength: 128 };
+
+const sourceIdSchema: JsonSchema = { type: "string", minLength: 1, maxLength: 100 };
+const quotationSchema: JsonSchema = { type: "string", minLength: 1, maxLength: 4000 };
+const assessmentSchema: JsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["discoveryId", "buyerNoticeNumber", "candidates"],
+  properties: {
+    discoveryId: idSchema,
+    buyerNoticeNumber: publicationNumberSchema,
+    candidates: {
+      type: "array",
+      maxItems: 5,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["company", "identity", "claims"],
+        properties: {
+          company: {
+            type: "object",
+            additionalProperties: false,
+            required: ["name", "officialDomain"],
+            properties: {
+              name: { type: "string", minLength: 1, maxLength: 300 },
+              officialDomain: { type: "string", minLength: 1, maxLength: 253 },
+              publicOrganizationId: { type: "string", minLength: 1, maxLength: 200 },
+            },
+          },
+          identity: {
+            type: "object",
+            additionalProperties: false,
+            required: ["sourceId", "quotation"],
+            properties: {
+              sourceId: sourceIdSchema,
+              quotation: quotationSchema,
+              organizationIdQuotation: quotationSchema,
+            },
+          },
+          claims: {
+            type: "array",
+            maxItems: 100,
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["requirementKey", "outcome"],
+              properties: {
+                requirementKey: { type: "string", minLength: 1, maxLength: 100 },
+                outcome: { type: "string", enum: ["match", "mismatch", "unknown"] },
+                sourceId: sourceIdSchema,
+                quotation: quotationSchema,
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+};
 
 const emptyArgumentsSchema: JsonSchema = {
   type: "object",
@@ -498,6 +561,109 @@ export const MCP_TOOLS: readonly McpToolDefinition[] = [
     ),
     inputSchema: emptyArgumentsSchema,
     invoke: (backend, token) => backend.reportPending(token),
+  },
+  {
+    name: "get_my_participant",
+    description: describe(
+      "Read your own participant identity and operator-bounded mandate from the authenticated bearer token. " +
+        "Use this low-level tool flow from your actual client model; tool arguments cannot select authority.",
+    ),
+    inputSchema: emptyArgumentsSchema,
+    invoke: (backend, token) => requireCapability(backend.getMyParticipant, "get_my_participant").call(backend, token),
+  },
+  {
+    name: "search_buyer_notices",
+    description: describe(
+      "Search live public buyer notices for the actual buyer need, not a fixed supplier. " +
+        "Your client model selects a relevant publication number and passes buyerNoticeNumber to create_request.",
+    ),
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["query"],
+      properties: {
+        query: { type: "string", minLength: 1, maxLength: 1500 },
+        limit: { type: "integer", minimum: 1, maximum: 5 },
+      },
+    },
+    invoke: (backend, token, args) => requireCapability(backend.searchBuyerNotices, "search_buyer_notices")
+      .call(backend, token, stringArg(args, "query"), args["limit"] as number | undefined),
+  },
+  {
+    name: "get_discovery_evidence",
+    description: describe(
+      "Read the caller-scoped live discovery evidence and backend-issued source IDs. " +
+        "Your actual client model must read real evidence, use its own semantic reasoning, then submit a scoped assessment; " +
+        "there is no backend LLM or fixed supplier selection.",
+    ),
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["discoveryId"],
+      properties: { discoveryId: idSchema },
+    },
+    invoke: (backend, token, args) => requireCapability(backend.getDiscoveryEvidence, "get_discovery_evidence")
+      .call(backend, token, stringArg(args, "discoveryId")),
+  },
+  {
+    name: "read_discovery_source",
+    description: describe(
+      "Read a bounded slice of real retrieved source text by its discovery-scoped source ID. " +
+        "Use your own client model to interpret it and cite verbatim quotations in submit_discovery_assessment. " +
+        "Unknown price, stock or delivery remains unknown until declared as simulated offer terms.",
+    ),
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["discoveryId", "sourceId"],
+      properties: {
+        discoveryId: idSchema,
+        sourceId: sourceIdSchema,
+        offset: { type: "integer", minimum: 0 },
+        limit: { type: "integer", minimum: 1, maximum: 8000 },
+      },
+    },
+    invoke: (backend, token, args) => {
+      const options = {
+        ...(typeof args["offset"] === "number" ? { offset: args["offset"] } : {}),
+        ...(typeof args["limit"] === "number" ? { limit: args["limit"] } : {}),
+      };
+      return requireCapability(backend.readDiscoverySource, "read_discovery_source")
+        .call(backend, token, stringArg(args, "discoveryId"), stringArg(args, "sourceId"),
+          Object.keys(options).length === 0 ? undefined : options);
+    },
+  },
+  {
+    name: "submit_discovery_assessment",
+    description: describe(
+      "Submit your client model's semantic assessment of real evidence using only scoped source IDs and verbatim quotations. " +
+        "The backend validates source binding and ranks deterministically, without a backend LLM or account-availability bias. " +
+        "Do not supply actor, run, source hash or body metadata. After ranking call resolve_discovery_participants.",
+    ),
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["discoveryId", "assessment"],
+      properties: { discoveryId: idSchema, assessment: assessmentSchema },
+    },
+    invoke: (backend, token, args) => requireCapability(backend.submitDiscoveryAssessment, "submit_discovery_assessment")
+      .call(backend, token, stringArg(args, "discoveryId"), args["assessment"] as unknown as AgentAssessment),
+  },
+  {
+    name: "resolve_discovery_participants",
+    description: describe(
+      "After deterministic evidence ranking, resolve ranked public company identities to connected demo participants. " +
+        "Availability never changes ranking; unconnected leads do not become fabricated quotes or fixed suppliers. " +
+        "Your client model may then request a quote from a qualifying connected participant.",
+    ),
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["discoveryId"],
+      properties: { discoveryId: idSchema },
+    },
+    invoke: (backend, token, args) => requireCapability(backend.resolveDiscoveryParticipants, "resolve_discovery_participants")
+      .call(backend, token, stringArg(args, "discoveryId")),
   },
 ];
 

@@ -1,4 +1,5 @@
 import type { DiscoveryResult, EventPage, Offer, Order, RegistrationInput, SourcingRequest } from "../contracts.js";
+import type { AgentAssessment } from "../sourcing/assessment.js";
 import type {
   AcceptanceResult,
   CreateRequestInput,
@@ -21,6 +22,12 @@ export interface PlatformToolClient {
   createRequest(input: CreateRequestInput): Promise<SourcingRequest>;
   startDiscovery(requestId: string): Promise<{ discoveryId: string }>;
   getDiscovery(discoveryId: string): Promise<DiscoveryResult>;
+  getMyParticipant?(): Promise<unknown>;
+  searchBuyerNotices?(query: string, limit?: number): Promise<unknown>;
+  getDiscoveryEvidence?(discoveryId: string): Promise<unknown>;
+  readDiscoverySource?(discoveryId: string, sourceId: string, options?: { offset?: number; limit?: number }): Promise<unknown>;
+  submitDiscoveryAssessment?(discoveryId: string, assessment: AgentAssessment): Promise<DiscoveryResult>;
+  resolveDiscoveryParticipants?(discoveryId: string): Promise<unknown>;
   requestQuote(requestId: string, supplierId: string): Promise<{ eventId: string }>;
   submitOffer(input: SubmitOfferInput): Promise<Offer>;
   acceptOffer(offerId: string): Promise<AcceptanceResult>;
@@ -63,6 +70,30 @@ export function createMcpBackend(options: McpBackendOptions): McpToolBackend {
     createRequest: (token, input) => clientForToken(token).createRequest(input),
     startDiscovery: (token, requestId) => clientForToken(token).startDiscovery(requestId),
     getDiscovery: (token, discoveryId) => clientForToken(token).getDiscovery(discoveryId),
+    getMyParticipant: async (token) => {
+      const client = clientForToken(token);
+      return requireCapability(client.getMyParticipant, "get_my_participant").call(client);
+    },
+    searchBuyerNotices: async (token, query, limit) => {
+      const client = clientForToken(token);
+      return requireCapability(client.searchBuyerNotices, "search_buyer_notices").call(client, query, limit);
+    },
+    getDiscoveryEvidence: async (token, discoveryId) => {
+      const client = clientForToken(token);
+      return requireCapability(client.getDiscoveryEvidence, "get_discovery_evidence").call(client, discoveryId);
+    },
+    readDiscoverySource: async (token, discoveryId, sourceId, options) => {
+      const client = clientForToken(token);
+      return requireCapability(client.readDiscoverySource, "read_discovery_source").call(client, discoveryId, sourceId, options);
+    },
+    submitDiscoveryAssessment: async (token, discoveryId, assessment) => {
+      const client = clientForToken(token);
+      return requireCapability(client.submitDiscoveryAssessment, "submit_discovery_assessment").call(client, discoveryId, assessment);
+    },
+    resolveDiscoveryParticipants: async (token, discoveryId) => {
+      const client = clientForToken(token);
+      return requireCapability(client.resolveDiscoveryParticipants, "resolve_discovery_participants").call(client, discoveryId);
+    },
     requestQuote: (token, requestId, supplierId) =>
       clientForToken(token).requestQuote(requestId, supplierId),
     submitOffer: (token, input) => clientForToken(token).submitOffer(input),
@@ -105,7 +136,15 @@ function requireHook<T>(hook: T | undefined, tool: string): T {
   return hook;
 }
 
-/** Raised when a tool needs a runtime hook this deployment did not configure. */
+/** Optional capabilities keep older clients usable while exposing an explicit tool error. */
+export function requireCapability<T>(capability: T | undefined, tool: string): T {
+  if (capability === undefined) {
+    throw new ToolUnavailableError(`${tool} is unavailable: this deployment has no supporting backend capability.`);
+  }
+  return capability;
+}
+
+/** Raised when a tool needs a capability or runtime hook this deployment did not configure. */
 export class ToolUnavailableError extends Error {
   readonly code = "TOOL_UNAVAILABLE";
 

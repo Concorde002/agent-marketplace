@@ -6,6 +6,7 @@ import type {
   RegistrationInput,
   SourcingRequest,
 } from "../contracts.js";
+import type { AgentAssessment } from "../sourcing/assessment.js";
 import { MCP_TOOLS, findTool, validateJsonSchema } from "./tools.js";
 
 /**
@@ -21,6 +22,12 @@ export interface McpToolBackend {
   createRequest(token: string, input: CreateRequestInput): Promise<SourcingRequest>;
   startDiscovery(token: string, requestId: string): Promise<{ discoveryId: string }>;
   getDiscovery(token: string, discoveryId: string): Promise<DiscoveryResult>;
+  getMyParticipant?(token: string): Promise<unknown>;
+  searchBuyerNotices?(token: string, query: string, limit?: number): Promise<unknown>;
+  getDiscoveryEvidence?(token: string, discoveryId: string): Promise<unknown>;
+  readDiscoverySource?(token: string, discoveryId: string, sourceId: string, options?: { offset?: number; limit?: number }): Promise<unknown>;
+  submitDiscoveryAssessment?(token: string, discoveryId: string, assessment: AgentAssessment): Promise<DiscoveryResult>;
+  resolveDiscoveryParticipants?(token: string, discoveryId: string): Promise<unknown>;
   requestQuote(token: string, requestId: string, supplierId: string): Promise<{ eventId: string }>;
   submitOffer(token: string, input: SubmitOfferInput): Promise<Offer>;
   acceptOffer(token: string, offerId: string): Promise<AcceptanceResult>;

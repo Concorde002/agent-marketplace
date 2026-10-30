@@ -8,6 +8,7 @@ import type {
   RequestId,
   SourcingRequest,
 } from "../contracts.js";
+import type { AgentAssessment } from "../sourcing/assessment.js";
 
 export interface PlatformClientOptions {
   baseUrl: string;
@@ -115,6 +116,42 @@ export class PlatformClient {
 
   async getDiscovery(discoveryId: string): Promise<DiscoveryResult> {
     return this.send("GET", `/v1/discoveries/${encodeURIComponent(discoveryId)}`);
+  }
+
+  async getMyParticipant(): Promise<unknown> {
+    return this.send("GET", "/v1/me");
+  }
+
+  async searchBuyerNotices(query: string, limit?: number): Promise<unknown> {
+    const path = "/v1/sources/buyer-notices/search";
+    const body = { query, ...(limit === undefined ? {} : { limit }) };
+    return this.send("POST", path, body, stableKey("searchBuyerNotices", path, body));
+  }
+
+  async getDiscoveryEvidence(discoveryId: string): Promise<unknown> {
+    return this.send("GET", `/v1/discoveries/${encodeURIComponent(discoveryId)}/evidence`);
+  }
+
+  async readDiscoverySource(
+    discoveryId: string,
+    sourceId: string,
+    options: { offset?: number; limit?: number } = {},
+  ): Promise<unknown> {
+    const query = new URLSearchParams();
+    if (options.offset !== undefined) query.set("offset", String(options.offset));
+    if (options.limit !== undefined) query.set("limit", String(options.limit));
+    const suffix = query.size === 0 ? "" : `?${query}`;
+    return this.send("GET", `/v1/discoveries/${encodeURIComponent(discoveryId)}/sources/${encodeURIComponent(sourceId)}${suffix}`);
+  }
+
+  async submitDiscoveryAssessment(discoveryId: string, assessment: AgentAssessment): Promise<DiscoveryResult> {
+    const path = `/v1/discoveries/${encodeURIComponent(discoveryId)}/assessments`;
+    return this.send("POST", path, assessment, stableKey("submitDiscoveryAssessment", path, assessment));
+  }
+
+  async resolveDiscoveryParticipants(discoveryId: string): Promise<unknown> {
+    const path = `/v1/discoveries/${encodeURIComponent(discoveryId)}/resolve`;
+    return this.send("POST", path, {}, stableKey("resolveDiscoveryParticipants", path, {}));
   }
 
   async listEvents(after?: string): Promise<EventPage> {

@@ -498,7 +498,13 @@ describe("GoogleSheetsTable", () => {
       fetchImpl: hanging,
       timeoutMs: 20,
     });
-    await assert.rejects(table.readRows("Requests"), /^Error: POST oauth2\.googleapis\.com\/token failed: request timed out after 20ms$/);
+    // The hanging fake has no socket; AbortSignal.timeout alone does not keep Node alive.
+    const keepalive = setTimeout(() => {}, 1000);
+    try {
+      await assert.rejects(table.readRows("Requests"), /^Error: POST oauth2\.googleapis\.com\/token failed: request timed out after 20ms$/);
+    } finally {
+      clearTimeout(keepalive);
+    }
   });
 });
 
