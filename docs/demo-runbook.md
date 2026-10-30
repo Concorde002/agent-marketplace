@@ -74,3 +74,21 @@ Both demand and supply must be inspectable in structured tool results and bot ch
 Use TED plus supplier search and official capability/certificate sources first. Add another procurement portal only for a concrete missing requirement or better accessible backup, not to maximize connector count. Respect source terms and avoid restricted/export-controlled or private data. Keep demo-case notes outside research-agent filesystem/context, clear prior candidate/evidence state between runs, and retain immutable audit/order history.
 
 For a stronger live demonstration, show a blind discovery receipt with queries, timestamps, source hashes and the ranking before account lookup. Then change a mandatory standard or deadline and show a reasoned refusal. Those are proposed integration checks, not an implemented live demonstration. Simulated buyer/supplier API clients can test protocol behavior locally; only real separate client sessions prove Grok/Instinct compatibility.
+
+## Independent testing with TesterArmy e2e, investigated but not installed
+
+The official [TesterArmy e2e framework](https://e2e.tester.army/) can use a configured model/subscription for agent steps or expose deterministic app tools through its MCP server to an external coding agent. Those are different modes: a Grok model inside the runner is not proof that a particular Grokbot client works. The runner's configured provider pays for its model calls; an external bot pays for its own reasoning. Backend semantic extraction, if added, is a separate model budget.
+
+This project is backend-only. The shipped e2e engines target web/mobile apps, so a marketplace API tool adapter/custom executor or engine integration must be designed first. Do not invent a frontend, expose an admin console or add a public tunnel just to satisfy the runner. Start with disposable deterministic API integration tests; add independent agent exploration after actual marketplace routes work.
+
+Before enabling it:
+
+- Coordinate package/configuration changes with the platform owner and MCP/client adapters with the agent owner. No TesterArmy package, skill or MCP server was installed by this increment.
+- The inspected npm release `e2e@0.21.3` requires Node `^22.22.3 || >=24.8.0`; this checkout's observed runtime was `22.22.2`. Updating to a supported Node 22 patch also preserves the project's existing Node 22 engine constraint.
+- Choose/provision the model account securely and cap model calls, actions, elapsed time and cost. Keep buyer/supplier credentials separate and inject them through the test tool boundary, not prompts or reports. Do not grant deployment, production data, cloud/provider secrets or real-payment access.
+- Use fresh sessions and `cache: 'off'` or `e2e run --no-cache` for independent-discovery acceptance. The framework normally replays verified actions; changing models alone does not invalidate that replay cache. Its `explore`/MCP exploration sessions do not use replay, but tests launched through an MCP session can. Inspect reports, model usage and actual fresh source receipts, not an agent's success statement alone.
+- Give testers generic need/constraint descriptions and tool documentation only. Never supply prepared supplier identities, saved candidate lists or private rehearsal notes. Prevent filesystem access to evaluator material. Keep platform account resolution after the independently frozen rank.
+
+The eventual black-box suite should cover fresh buyer/supplier/standards evidence, unchanged evidence rank when registration changes, missing certification staying unknown, expired/source-failure paths, incompatible budget/deadline refusal, participant isolation, retries and accurate authoritative order/payment reporting. Require machine assertions and reproducible failures in addition to semantic critique. No live E2E, named-bot compatibility or sandbox settlement has been established yet.
+
+Sources inspected: [models](https://e2e.tester.army/docs/models.md), [project tools](https://e2e.tester.army/docs/tools.md), [MCP server](https://e2e.tester.army/docs/reference/mcp.md), [replay cache](https://e2e.tester.army/docs/cache.md). Published support is not a verified integration with the team's selected bots.
