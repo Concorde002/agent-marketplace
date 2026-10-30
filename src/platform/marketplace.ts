@@ -204,10 +204,16 @@ export class Marketplace {
   }
 
   async submitOffer(actor: ActorContext, input: unknown, key: string): Promise<Offer> {
-    toolInput("submit_offer", input);
-    const body = input as Omit<Offer, "id" | "buyerId" | "supplierId">;
+    // Legacy HTTP clients send Omit<Offer, "id">, including both participant ids. They are compared with the
+    // server-derived parties below and never used as authority; every other unknown field is still refused.
+    const { buyerId: claimedBuyer, supplierId: claimedSupplier, ...terms } = isRecord(input) ? input : {};
+    if (!isRecord(input)) throw new PlatformError(400, "INVALID_INPUT");
+    for (const claimed of [claimedBuyer, claimedSupplier]) if (claimed !== undefined && (typeof claimed !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(claimed))) throw new PlatformError(400, "INVALID_INPUT");
+    toolInput("submit_offer", terms);
+    const body = terms as Omit<Offer, "id" | "buyerId" | "supplierId">;
     return this.mutate(actor, key, "submit_offer", input, async (db) => {
       const request = await this.readRequest(db, actor, body.requestId, true);
+      await requireOpen(db, request.id);
       let supplierId = actor.participantId;
       let revision = 1;
       if (body.previousOfferId) {
@@ -219,11 +225,16 @@ export class Marketplace {
       } else if (actor.role !== "supplier") throw new PlatformError(403, "FORBIDDEN");
       const invited = (await db.query("select 1 from marketplace.quote_requests where request_id=$1 and supplier_id=$2", [request.id, supplierId])).rows.length;
       if (!invited) throw new PlatformError(403, "QUOTE_REQUEST_REQUIRED");
+      if ((claimedBuyer !== undefined && claimedBuyer !== request.buyerId) || (claimedSupplier !== undefined && claimedSupplier !== supplierId)) {
+        throw new PlatformError(403, "PARTICIPANT_MISMATCH");
+      }
       const offer: Offer = { ...body, id: crypto.randomUUID(), buyerId: request.buyerId, supplierId };
       const parties = [request.buyerId, supplierId].sort();
       const mandates = new Map<string, Row>();
       for (const id of parties) mandates.set(id, await this.mandate(db, id, true));
-      this.assertOffer(request, offer, mandates.get(request.buyerId)!, mandates.get(supplierId)!);
+      // A buyer-authored revision is not checked against the supplier's private limits here: refusing it would let
+      // the buyer binary-search the floor. The supplier's own acceptance below still enforces every limit.
+      this.assertOffer(request, offer, mandates.get(request.buyerId)!, mandates.get(supplierId)!, actor.participantId === supplierId);
       if (revision > 3) throw new PlatformError(409, "REVISION_LIMIT");
       const first = (await db.query("select created_at from marketplace.offers where request_id=$1 and supplier_id=$2 order by revision limit 1", [request.id, supplierId])).rows[0];
       if (first && this.now().getTime() - Date.parse(date(first.created_at)) >= 300_000) throw new PlatformError(409, "NEGOTIATION_EXPIRED");
@@ -243,11 +254,15 @@ export class Marketplace {
       if (existing) return { state: "agreed", order: await this.readOrder(db, actor, existing.id as string) };
       const preliminary = await this.readOffer(db, actor, id);
       const request = await this.readRequest(db, actor, preliminary.requestId, true);
+      // Re-check under the request lock: a concurrent acceptance may have just created this order.
+      const agreed = (await db.query("select id from marketplace.orders where offer_id=$1", [id])).rows[0];
+      if (agreed) return { state: "agreed", order: await this.readOrder(db, actor, agreed.id as string) };
+      await requireOpen(db, request.id);
       const row = (await db.query("select * from marketplace.offers where id=$1 for update", [id])).rows[0]!;
       if (row.status !== "current") throw new PlatformError(409, "STALE_OFFER");
       const mandates = new Map<string, Row>();
       for (const pid of [preliminary.buyerId, preliminary.supplierId].sort()) mandates.set(pid, await this.mandate(db, pid, true));
-      this.assertOffer(request, preliminary, mandates.get(preliminary.buyerId)!, mandates.get(preliminary.supplierId)!);
+      this.assertOffer(request, preliminary, mandates.get(preliminary.buyerId)!, mandates.get(preliminary.supplierId)!, true);
       const accepted = (await db.query("select 1 from marketplace.offer_acceptances where offer_id=$1 and participant_id=$2", [id, actor.participantId])).rows.length;
       if (!accepted) await db.query("insert into marketplace.offer_acceptances(offer_id,participant_id) values($1,$2)", [id, actor.participantId]);
       const all = (await db.query("select participant_id from marketplace.offer_acceptances where offer_id=$1", [id])).rows;
@@ -261,12 +276,15 @@ export class Marketplace {
     });
   }
 
-  private assertOffer(request: SourcingRequest, offer: Offer, buyer: Row, supplier: Row) {
-    if (!new OfferRanker({ now: this.now }).rankOffers(request, [offer]).length || offer.deliveredTotal.currency !== buyer.currency ||
-        offer.deliveredTotal.currency !== supplier.currency || offer.deliveredTotal.amountMinor > minor(buyer.max_order_total_minor) ||
+  /** `supplierLimits` is false only for a buyer-authored revision; acceptance always checks both parties. */
+  private assertOffer(request: SourcingRequest, offer: Offer, buyer: Row, supplier: Row, supplierLimits: boolean) {
+    const requestAndBuyer = !new OfferRanker({ now: this.now }).rankOffers(request, [offer]).length || offer.deliveredTotal.currency !== buyer.currency ||
+        offer.deliveredTotal.amountMinor > minor(buyer.max_order_total_minor) || request.destination !== buyer.destination ||
+        !(buyer.allowed_categories as string[]).includes(request.category);
+    const supplierPrivate = supplierLimits && (offer.deliveredTotal.currency !== supplier.currency ||
         offer.deliveredTotal.amountMinor < minor(supplier.min_delivered_total_minor) || offer.quantity > minor(supplier.available_quantity) - minor(supplier.allocated_quantity) ||
-        offer.unit !== supplier.unit || isoTimestamp(offer.deliveryAt) < Date.parse(date(supplier.earliest_delivery_at)) || request.destination !== buyer.destination ||
-        !(buyer.allowed_categories as string[]).includes(request.category)) throw new PlatformError(403, "POLICY_REFUSAL", "Offer is outside authoritative request or mandate limits");
+        offer.unit !== supplier.unit || isoTimestamp(offer.deliveryAt) < Date.parse(date(supplier.earliest_delivery_at)));
+    if (requestAndBuyer || supplierPrivate) throw new PlatformError(403, "POLICY_REFUSAL", "Offer is outside authoritative request or mandate limits");
   }
 
   private async mandate(db: Queryable, participantId: string, lock = false): Promise<Row> {
@@ -313,6 +331,11 @@ export class Marketplace {
   }
 }
 
+/** Call with the request row already locked. A closed request is a final answer, not a retryable outage. */
+async function requireOpen(db: Queryable, requestId: string) {
+  const row = (await db.query("select status from marketplace.sourcing_requests where id=$1", [requestId])).rows[0];
+  if (row?.status !== "open") throw new PlatformError(409, "REQUEST_CLOSED");
+}
 function buyerOnly(actor: ActorContext) { if (actor.role !== "buyer") throw new PlatformError(403, "FORBIDDEN"); }
 function minor(value: unknown): number { const n = Number(value); if (!Number.isSafeInteger(n)) throw new PlatformError(500, "INVALID_STORED_AMOUNT"); return n; }
 function date(value: unknown): string { return new Date(value as string | Date).toISOString(); }
