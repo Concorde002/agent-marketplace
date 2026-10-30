@@ -14,12 +14,12 @@ Owner: dashboard developer. Scope: one read-only observer page and its presentat
 - Proposed backend piece (needs the backend developer's review): `src/platform/observer.ts`,
   observer routes in `src/platform/http.ts`, migration `20261030170000_observer.sql`, config in
   `src/server.ts`, operator key command `observer:operator`.
-- `tests/observer/observer.test.ts` (10): paid run with both lanes and observed clients; no private
+- `tests/platform/observer-projection.test.ts` (10): paid run with both lanes and observed clients; no private
   limit, token or payment method in any response; session scoping (other buyer 404, participant
   token rejected, observer key rejected on participant routes, expiry, POST 405); polling writes
   nothing; failed and pending payments show no receipt; conditional candidate never quoted;
   refusal traced with no order; CORS only for configured origins; phase derivation; key command.
-- `tests/observer/support/rehearsal.ts`: local rehearsal server (paid, refused, then a slow live run).
+- `tests/platform/support/observer-rehearsal.ts`: local rehearsal server (paid, refused, then a slow live run).
 
 Checks (2026-10-30): `npm run check`: typecheck clean; 332 tests, 328 passed, 0 failed, 4
 pre-existing TODO. Browser-checked locally at 1440×900 and 375×812 (no horizontal scroll), light

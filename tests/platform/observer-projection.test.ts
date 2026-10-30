@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { derivePhase, operationFor } from "../../src/platform/observer-runs.js";
 import { issueObserverKey } from "../../src/platform/observer-cli.js";
-import { announceMcpClient, createObserverPlatform, driveRun, PRIVATE, sha256, type ObserverPlatform } from "./support/platform.js";
+import { announceMcpClient, createObserverPlatform, driveRun, PRIVATE, sha256, type ObserverPlatform } from "./support/observer-platform.js";
 
 type Json = Record<string, any>;
 

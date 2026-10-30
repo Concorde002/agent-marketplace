@@ -3,7 +3,7 @@
  * and payment provider), serves dashboard/ on a second origin, records one finished run, and then
  * starts a slower run so the page can be watched while it progresses.
  *
- *   npm run build && node dist/tests/observer/support/rehearsal.js
+ *   npm run build && node dist/tests/platform/support/observer-rehearsal.js
  *
  * Environment: OBSERVER_FIXTURE_PORT (API, default 8791), DASHBOARD_PORT (default 8792),
  * REHEARSAL_STEP_MS (pause between live steps, default 4000), REHEARSAL_LIVE=off to skip the live run.
@@ -14,7 +14,7 @@ import { readFile } from "node:fs/promises";
 import http from "node:http";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
-import { announceMcpClient, createObserverPlatform, driveRun } from "./platform.js";
+import { announceMcpClient, createObserverPlatform, driveRun } from "./observer-platform.js";
 
 const TYPES: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml" };

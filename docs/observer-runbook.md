@@ -22,7 +22,7 @@ the authoritative sandbox payment state. It starts, retries and pays for nothing
 
 Never in a response, the page, browser storage or a trace: mandates and grants (ceilings,
 floors, quantities), the request's private maximum total, participant or operator credentials,
-Stripe customer/payment-method ids, webhook secrets and raw headers. `tests/observer` asserts this
+Stripe customer/payment-method ids, webhook secrets and raw headers. `tests/platform/observer-projection.test.ts` asserts this
 with distinctive limit values and the tokens themselves.
 
 ## States the page keeps distinct
@@ -144,7 +144,7 @@ npx wrangler@4.45.0 pages deploy dashboard --project-name agentmarketplace --bra
 ## Local rehearsal (fixture, not demo evidence)
 
 ```sh
-npm run build && node dist/tests/observer/support/rehearsal.js
+npm run build && node dist/tests/platform/support/observer-rehearsal.js
 ```
 
 Real handler, Marketplace and settlement rules on PGlite with stubbed TED/Tavily and a stubbed
