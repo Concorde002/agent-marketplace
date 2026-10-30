@@ -389,6 +389,21 @@ export function decideBuyerOffer(input: BuyerDecisionInput): BuyerOfferDecision 
     return { kind: "refuse", reasons: check.reasons };
   }
 
+  // A counteroffer only changes the price. Any failure of a non-price term
+  // (quantity, unit, destination, currency, delivery, expiry, mandate, or a
+  // mandatory requirement) is terminal: a different price cannot fix it.
+  const nonPriceReasons = check.reasons.filter(
+    (reason) =>
+      reason !== "order_total_exceeded" && reason !== "run_total_exceeded",
+  );
+  if (nonPriceReasons.length > 0) {
+    const reasons: PolicyRefusalReason[] = [...check.reasons];
+    if (status.reason !== undefined) {
+      reasons.push(status.reason);
+    }
+    return { kind: "refuse", reasons };
+  }
+
   if (status.open) {
     return {
       kind: "counter",

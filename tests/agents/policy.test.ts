@@ -450,3 +450,131 @@ test("requirement and run-total helpers derive safe policy inputs", () => {
   assert.equal(remainingRunTotal(5000, 6000), 0);
   assert.throws(() => remainingRunTotal(-1, 0), RangeError);
 });
+
+test("buyer refuses instead of countering every non-price refusal", () => {
+  const cases: Array<[string, Offer, BuyerPolicy]> = [
+    ["quantity_mismatch", makeOffer({ quantity: 9 }), buyerPolicy()],
+    ["unit_mismatch", makeOffer({ unit: "pallet" }), buyerPolicy()],
+    [
+      "destination_mismatch",
+      makeOffer({ destination: "Hamburg" }),
+      buyerPolicy(),
+    ],
+    [
+      "currency_mismatch",
+      makeOffer({ deliveredTotal: { amountMinor: 1100, currency: "USD" } }),
+      buyerPolicy(),
+    ],
+    [
+      "delivery_after_deadline",
+      makeOffer({ deliveryAt: "2026-11-16T00:00:00.000Z" }),
+      buyerPolicy(),
+    ],
+    [
+      "offer_expired",
+      makeOffer({ expiresAt: "2026-10-30T12:00:00.000Z" }),
+      buyerPolicy(),
+    ],
+    [
+      "mandate_expired",
+      makeOffer(),
+      buyerPolicy({ expiresAt: "2026-10-30T11:59:59.000Z" }),
+    ],
+    [
+      "missing_mandatory_requirement",
+      makeOffer({ confirmedRequirementKeys: [] }),
+      buyerPolicy(),
+    ],
+  ];
+
+  for (const [reason, offer, policy] of cases) {
+    const decision = decideBuyerOffer({
+      offer,
+      policy,
+      state: createNegotiationState(NOW),
+      nowMs: NOW,
+    });
+    assert.equal(decision.kind, "refuse", reason);
+    if (decision.kind === "refuse") {
+      assert.deepEqual(decision.reasons, [reason], reason);
+    }
+  }
+});
+
+test("buyer counters only when every failed check is a price reason", () => {
+  const overBudget = decideBuyerOffer({
+    offer: makeOffer({ deliveredTotal: { amountMinor: 1300, currency: "EUR" } }),
+    policy: buyerPolicy(),
+    state: createNegotiationState(NOW),
+    nowMs: NOW,
+  });
+  assert.deepEqual(overBudget, {
+    kind: "counter",
+    amountMinor: 1200,
+    reasons: ["order_total_exceeded"],
+  });
+
+  const overRun = decideBuyerOffer({
+    offer: makeOffer({ deliveredTotal: { amountMinor: 901, currency: "EUR" } }),
+    policy: buyerPolicy({ remainingRunTotalMinor: 900 }),
+    state: createNegotiationState(NOW),
+    nowMs: NOW,
+  });
+  assert.deepEqual(overRun, {
+    kind: "counter",
+    amountMinor: 1051,
+    reasons: ["run_total_exceeded"],
+  });
+
+  const bothPriceReasons = decideBuyerOffer({
+    offer: makeOffer({ deliveredTotal: { amountMinor: 1300, currency: "EUR" } }),
+    policy: buyerPolicy({ remainingRunTotalMinor: 1000 }),
+    state: createNegotiationState(NOW),
+    nowMs: NOW,
+  });
+  assert.deepEqual(bothPriceReasons, {
+    kind: "counter",
+    amountMinor: 1200,
+    reasons: ["order_total_exceeded", "run_total_exceeded"],
+  });
+});
+
+test("buyer refuses a mixed price and non-price refusal", () => {
+  const decision = decideBuyerOffer({
+    offer: makeOffer({
+      quantity: 9,
+      deliveredTotal: { amountMinor: 1300, currency: "EUR" },
+    }),
+    policy: buyerPolicy(),
+    state: createNegotiationState(NOW),
+    nowMs: NOW,
+  });
+  assert.deepEqual(decision, {
+    kind: "refuse",
+    reasons: ["quantity_mismatch", "order_total_exceeded"],
+  });
+});
+
+test("buyer refuses a price failure once the revision or deadline cap is exhausted", () => {
+  const atRevisionCap = decideBuyerOffer({
+    offer: makeOffer({ deliveredTotal: { amountMinor: 1300, currency: "EUR" } }),
+    policy: buyerPolicy(),
+    state: { revisions: 3, startedAtMs: NOW },
+    nowMs: NOW,
+  });
+  assert.deepEqual(atRevisionCap, {
+    kind: "refuse",
+    reasons: ["order_total_exceeded", "revision_limit"],
+  });
+
+  const afterDeadline = decideBuyerOffer({
+    offer: makeOffer({ deliveredTotal: { amountMinor: 1300, currency: "EUR" } }),
+    policy: buyerPolicy(),
+    state: createNegotiationState(NOW),
+    nowMs: NOW + 300000,
+  });
+  assert.deepEqual(afterDeadline, {
+    kind: "refuse",
+    reasons: ["order_total_exceeded", "deadline_exceeded"],
+  });
+});
