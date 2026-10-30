@@ -89,6 +89,16 @@ and policy tests):
 - **Evidence-derived routing removed.** `publicOrganizationId` from evidence is no longer used as a
   quote recipient.
 
+## Bot sandbox (branch `feat/agent-sandbox`)
+
+Real bots can now be tested before the platform exists: `node dist/tests/agents/support/sandbox.js`
+(see `docs/bot-sandbox.md`). Bots use three high-level MCP tools, `start_purchase`,
+`purchase_status` and `supplier_status`, served by `src/agents/host.ts`. Instinct uses a Google
+Sheet bridge (`src/agents/bridge.ts`, `src/agents/sheets.ts`) because it documents no custom MCP or
+API. Checked locally: `tests/agents/host.test.ts` covers the host, MCP over HTTP, both bridges, the
+grant cap and refusal. A JSON-RPC client drove both bots over HTTP through to paid and refused
+outcomes. Not yet run with a live Grok Bot or Instinct account.
+
 ## Gaps
 
 - No live Grok Bot account was available, so the vendor-documented custom-MCP path is documented and

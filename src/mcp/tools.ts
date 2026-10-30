@@ -1,5 +1,5 @@
 import type { RegistrationInput } from "../contracts.js";
-import type { CreateRequestInput, McpToolBackend, SubmitOfferInput } from "./gateway.js";
+import type { CreateRequestInput, McpToolBackend, PurchaseToolInput, SubmitOfferInput } from "./gateway.js";
 
 /**
  * The subset of JSON Schema used by the MCP tool contracts.
@@ -228,7 +228,99 @@ const emptyArgumentsSchema: JsonSchema = {
   properties: {},
 };
 
+const RESULT_RULE =
+  'Relay a final result to your human verbatim; it starts with exactly one of "agreed and sandbox-paid", ' +
+  '"no match" or "payment failed". Never invent, soften or upgrade a result.';
+
+const startPurchaseSchema: JsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["item", "category", "quantity", "unit", "destination", "deliverBy", "maxTotal", "currency"],
+  properties: {
+    item: { type: "string", minLength: 1, maxLength: 500, description: "What to buy, e.g. 'height-adjustable desks'." },
+    category: { type: "string", minLength: 1, maxLength: 128, description: "Short category, e.g. 'office-equipment'." },
+    quantity: { type: "integer", minimum: 1 },
+    unit: { type: "string", minLength: 1, maxLength: 64, description: "e.g. 'unit'." },
+    destination: { type: "string", minLength: 1, maxLength: 500, description: "Delivery city/address." },
+    deliverBy: {
+      type: "string",
+      minLength: 10,
+      maxLength: 40,
+      description: "Latest delivery date, YYYY-MM-DD or ISO 8601 with timezone.",
+    },
+    maxTotal: {
+      type: "number",
+      exclusiveMinimum: 0,
+      description: "Highest total your human allows, in major units (e.g. 5000 means 5000.00 EUR).",
+    },
+    currency: { type: "string", pattern: "^[A-Z]{3}$" },
+    requirements: {
+      type: "array",
+      maxItems: 20,
+      items: requirementSchema,
+      description: "Optional mandatory or nice-to-have specification items.",
+    },
+  },
+};
+
+function toPurchaseInput(args: Record<string, unknown>): PurchaseToolInput {
+  const deliverBy = stringArg(args, "deliverBy").trim();
+  const maxTotal = args["maxTotal"];
+  const requirements = args["requirements"];
+  return {
+    item: stringArg(args, "item"),
+    category: stringArg(args, "category"),
+    quantity: args["quantity"] as number,
+    unit: stringArg(args, "unit"),
+    destination: stringArg(args, "destination"),
+    deliverBy: /^\d{4}-\d{2}-\d{2}$/.test(deliverBy) ? `${deliverBy}T23:59:59Z` : deliverBy,
+    maxTotalMinor: Math.round((maxTotal as number) * 100),
+    currency: stringArg(args, "currency"),
+    ...(Array.isArray(requirements)
+      ? { requirements: requirements as PurchaseToolInput["requirements"] & object }
+      : {}),
+  };
+}
+
 export const MCP_TOOLS: readonly McpToolDefinition[] = [
+  {
+    name: "start_purchase",
+    description: describe(
+      "BUYER: start sourcing and negotiating one purchase for your human. The marketplace's buyer agent " +
+        "creates the request, runs live discovery, asks a connected supplier for a quote, negotiates within " +
+        "maxTotal (never above it) and completes a sandbox payment. Returns a runId immediately; then call " +
+        "purchase_status about every 15 seconds until state is 'done'. " +
+        RESULT_RULE,
+    ),
+    inputSchema: startPurchaseSchema,
+    invoke: (backend, token, args) => backend.startPurchase(token, toPurchaseInput(args)),
+  },
+  {
+    name: "purchase_status",
+    description: describe(
+      "BUYER: progress of a purchase started with start_purchase (default: the latest). 'progress' lists " +
+        "the negotiation steps so far; when state is 'done' or 'error', 'result' is the final message. " +
+        RESULT_RULE,
+    ),
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: { runId: idSchema },
+    },
+    invoke: (backend, token, args) =>
+      backend.purchaseStatus(token, typeof args["runId"] === "string" ? args["runId"] : undefined),
+  },
+  {
+    name: "supplier_status",
+    description: describe(
+      "SUPPLIER: the marketplace's supplier agent listens and negotiates continuously within your company's " +
+        "preset limits. This returns whether it is listening plus any new completion messages since the " +
+        "last call. Post each message to your human verbatim; if there are none, say nothing new happened. " +
+        RESULT_RULE,
+    ),
+    inputSchema: emptyArgumentsSchema,
+    invoke: (backend, token) => backend.supplierStatus(token),
+  },
   {
     name: "register_participant",
     description: describe(

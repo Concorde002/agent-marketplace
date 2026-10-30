@@ -2,6 +2,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type {
+  PurchaseToolInput,
+  PurchaseToolStatus,
+  SupplierToolStatus,
+} from "../../src/mcp/gateway.js";
+import type {
   DiscoveryResult,
   EventPage,
   Money,
@@ -143,6 +148,21 @@ class StubBackend implements McpToolBackend {
     return this.pendingResult;
   }
 
+  async startPurchase(token: string, input: PurchaseToolInput): Promise<PurchaseToolStatus> {
+    this.record("startPurchase", token, input);
+    return { runId: "run_1", state: "running", progress: [] };
+  }
+
+  async purchaseStatus(token: string, runId?: string): Promise<PurchaseToolStatus> {
+    this.record("purchaseStatus", token, runId);
+    return { runId: runId ?? "run_1", state: "done", progress: [], result: "agreed and sandbox-paid — order ord_1" };
+  }
+
+  async supplierStatus(token: string): Promise<SupplierToolStatus> {
+    this.record("supplierStatus", token);
+    return { listening: true, ticks: 3, messages: [] };
+  }
+
   private record(method: string, token: string, ...args: unknown[]): void {
     this.calls.push({ method, token, args });
     if (this.failure !== null) {
@@ -241,6 +261,9 @@ function toolCallText(result: ToolCallResult): string {
 }
 
 const EXPECTED_TOOLS = [
+  "start_purchase",
+  "purchase_status",
+  "supplier_status",
   "register_participant",
   "create_request",
   "start_discovery",

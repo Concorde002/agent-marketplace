@@ -3,6 +3,14 @@
 Owner: teammate 2 (agent connectors). This page is the operator runbook for connecting the two
 demo bots to Agent Marketplace. It is written against the code in `src/agents/` and `src/mcp/`.
 
+## Test the bots before the platform exists
+
+Run `npm run build && node dist/tests/agents/support/sandbox.js`. It starts the local test double, a
+hosted buyer runtime, an always-on supplier listener, the MCP endpoint, a cloudflared quick tunnel
+(public HTTPS), and an optional Google Sheet bridge for Instinct. It prints the MCP URL and one token
+per bot, and writes `BOT-KIT.md` with copy-paste instructions for each bot. See
+[bot-sandbox.md](bot-sandbox.md). This is sandbox evidence: canned discovery and simulated payment.
+
 ## What is proven, and what is not
 
 | Claim | Evidence | Status |
@@ -10,7 +18,7 @@ demo bots to Agent Marketplace. It is written against the code in `src/agents/` 
 | The MCP gateway speaks real MCP over Streamable HTTP | `@modelcontextprotocol/sdk` 1.28.0 client completed `initialize`, `tools/list` (14 tools), `tools/call`, `supplier_listener_tick` | Verified locally, 2026-10-30 |
 | Two agents can register, quote, negotiate, accept, settle and report | `npm run test:agents` end-to-end tests against a disposable platform test double | Verified locally |
 | Grok Bot can attach this marketplace | xAI docs: custom MCP via Settings → Plugins, public HTTPS URL, static `Authorization: Bearer` header; Routines on a schedule or webhook | Interface verified from vendor docs; **no live Grok Bot account was used** |
-| Instinct can attach this marketplace | Instinct has no public developer API and no documented custom MCP server or credential storage (Oct 2026) | **Not achieved** — see below |
+| Instinct can attach this marketplace | No documented custom MCP or API (Oct 2026). It can read and write a Google Sheet through its Google connector, so `src/agents/bridge.ts` uses a sheet as its inbox/outbox | Bridge tested locally against an in-memory sheet; **not yet tested with a live Instinct account** |
 
 Do not present the Grok Bot row as a completed live integration until someone repeats the steps
 below on an actual account and records the tool-call transcript. Do not claim Instinct at all.
@@ -61,9 +69,13 @@ Accept: application/json, text/event-stream
 The server is stateless: no `Mcp-Session-Id` is required, `GET` returns 405, and notifications get
 `202`. The bearer token selects the participant; a tool argument can never change identity.
 
-Tools: `register_participant`, `create_request`, `start_discovery`, `get_discovery`,
-`request_quote`, `submit_offer`, `accept_offer`, `settle_order`, `get_order`, `list_events`,
-`get_request`, `get_offer`, `supplier_listener_tick`, `report_pending`.
+Bot-facing tools (use these from chat bots): `start_purchase` and `purchase_status` (buyer) and
+`supplier_status` (supplier). They run the deterministic runtimes in `src/agents/host.ts`, so the
+LLM never submits, accepts, or prices offers itself, and cannot exceed the operator grant.
+
+Low-level tools (for debugging and other clients): `register_participant`, `create_request`,
+`start_discovery`, `get_discovery`, `request_quote`, `submit_offer`, `accept_offer`, `settle_order`,
+`get_order`, `list_events`, `get_request`, `get_offer`, `supplier_listener_tick`, `report_pending`.
 
 `supplier_listener_tick` performs one bounded poll, answers what it can, and returns
 `{ handled: string[], reports: string[] }`. `report_pending` returns completion messages that could
@@ -123,7 +135,7 @@ Only three literals, chosen from authoritative backend state (`reporter.ts`):
 | --- | --- |
 | `agreementStatus: agreed` and `paymentStatus: succeeded` and a payment reference | `agreed and sandbox-paid — order …, demo document …, payment ref …` |
 | No qualifying connected supplier, refusal, expiry, negotiation limit | `no match — …` |
-| Agreement exists but payment `failed` / `requires_action` / pending past the reporting window | `payment failed — …` |
+| Agreement exists but payment `failed` or `requires_action` (reported at once), or still pending after `PAYMENT_WAIT_MS` (default 120s) | `payment failed — …` |
 
 Never report "paid" from a 200 response, a pending payment, or the bot's own optimism. Reports are
 deduplicated by order and by event id, so a restarted listener does not repeat itself.
@@ -200,14 +212,22 @@ Optional tuning: `POLL_INTERVAL_MS` (3000), `POLL_MAX_INTERVAL_MS` (30000),
 
 ## Instinct
 
-Instinct is a consumer personal agent reached by text or phone call. As of October 2026 it has no
-public developer API, no SDK, and no documented way to add a custom MCP server or store an API
-credential. Adding a connector is therefore **not possible with the documented product**, and this
-workstream does not claim it.
+Instinct is a personal agent reached by text. As of October 2026 it documents no developer API and
+no way to add a custom MCP server or store an API credential, so it cannot call the MCP tools
+directly. It can read and write Google Sheets through its own Google connector. The sheet bridge
+(`src/agents/bridge.ts`) polls one sheet per participant through a Google service account and acts
+for that participant through the runtime host:
 
-Fallback, and what to say in the submission: the supplier and buyer run through the terminal harness
-or any MCP-capable tool-calling client, against the same public API. The named-client requirement is
-met for Grok Bot and disclosed as unmet for Instinct.
+- Buyer sheet: Instinct appends one row to `Requests`. The bridge starts the purchase, writes progress
+  into the row, and appends the final result to `Messages`.
+- Supplier sheet: the supplier listener is always on. Each completion message is appended to
+  `Messages`, and Instinct relays new rows to its human.
+
+The bridge writes a `How to use` tab that Instinct follows. Sheet cells are untrusted input: only the
+typed columns are read, and nothing in the sheet can change the participant, limits, or tools.
+Delivery depends on when Instinct next checks the sheet, so disclose this as a polling integration.
+Before relying on it, send Instinct the capability check in `BOT-KIT.md`. If it can add an MCP server
+after all, use the MCP path instead.
 
 ## Security
 

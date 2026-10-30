@@ -4,8 +4,11 @@ import type {
   CreateRequestInput,
   McpToolBackend,
   PendingReportResult,
+  PurchaseToolInput,
+  PurchaseToolStatus,
   SubmitOfferInput,
   SupplierTickResult,
+  SupplierToolStatus,
 } from "./gateway.js";
 
 /**
@@ -35,6 +38,9 @@ export interface PlatformToolClient {
 export interface ToolRuntimeHooks {
   supplierListenerTick?: (token: string) => Promise<SupplierTickResult>;
   reportPending?: (token: string) => Promise<PendingReportResult>;
+  startPurchase?: (token: string, input: PurchaseToolInput) => Promise<PurchaseToolStatus>;
+  purchaseStatus?: (token: string, runId?: string) => Promise<PurchaseToolStatus>;
+  supplierStatus?: (token: string) => Promise<SupplierToolStatus>;
 }
 
 export interface McpBackendOptions {
@@ -84,7 +90,19 @@ export function createMcpBackend(options: McpBackendOptions): McpToolBackend {
       }
       return pending(token);
     },
+
+    startPurchase: async (token, input) => requireHook(hooks?.startPurchase, "start_purchase")(token, input),
+    purchaseStatus: async (token, runId) =>
+      requireHook(hooks?.purchaseStatus, "purchase_status")(token, runId),
+    supplierStatus: async (token) => requireHook(hooks?.supplierStatus, "supplier_status")(token),
   };
+}
+
+function requireHook<T>(hook: T | undefined, tool: string): T {
+  if (hook === undefined) {
+    throw new ToolUnavailableError(`${tool} is unavailable: this deployment hosts no agent runtime.`);
+  }
+  return hook;
 }
 
 /** Raised when a tool needs a runtime hook this deployment did not configure. */

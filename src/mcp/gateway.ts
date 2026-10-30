@@ -31,6 +31,42 @@ export interface McpToolBackend {
   getOffer(token: string, offerId: string): Promise<Offer>;
   supplierListenerTick(token: string): Promise<SupplierTickResult>;
   reportPending(token: string): Promise<PendingReportResult>;
+  startPurchase(token: string, input: PurchaseToolInput): Promise<PurchaseToolStatus>;
+  purchaseStatus(token: string, runId?: string): Promise<PurchaseToolStatus>;
+  supplierStatus(token: string): Promise<SupplierToolStatus>;
+}
+
+/**
+ * High-level buyer request. The deterministic buyer runtime negotiates within
+ * `maxTotalMinor` (further capped by the operator grant); the bot never submits
+ * or accepts offers itself on this path.
+ */
+export interface PurchaseToolInput {
+  item: string;
+  category: string;
+  quantity: number;
+  unit: string;
+  destination: string;
+  deliverBy: string;
+  maxTotalMinor: number;
+  currency: string;
+  requirements?: { key: string; description: string; mandatory: boolean }[];
+}
+
+export interface PurchaseToolStatus {
+  runId: string;
+  state: "running" | "done" | "error";
+  progress: string[];
+  result?: string;
+  outcome?: string;
+  orderId?: string;
+}
+
+export interface SupplierToolStatus {
+  listening: boolean;
+  ticks: number;
+  lastTickAt?: string;
+  messages: string[];
 }
 
 /** Create-request body. `id` and `buyerId` are server-derived; `demo` must be true. */
