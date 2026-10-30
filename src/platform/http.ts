@@ -9,31 +9,129 @@ import { PaymentRefusedError, PaymentUnavailableError } from "../payments/settle
 import { IdentityError, authenticate, registerIdentity } from "./identity.js";
 import { PlatformError, type Database } from "./database.js";
 import { Marketplace } from "./marketplace.js";
+import { authenticateObserver, errorCodeFrom, idsFromResponse, listRuns, mcpClientInfo, operationFor, recordSighting, recordTrace,
+  runView, touchSighting, type TraceChannel } from "./observer.js";
 
 export interface PlatformHttp {
   handle(request: Request): Promise<Response>;
   readiness(): Promise<{ sourcingReady: boolean; sandboxPaymentConfigured: boolean; endToEndVerified: false }>;
 }
 
+export interface PlatformHttpOptions {
+  now?: () => Date;
+  paymentConfigured?: boolean;
+  observer?: {
+    /** Exact browser origins allowed to read the observer projection (CORS). Empty: same-origin only. */
+    allowedOrigins?: readonly string[];
+    /** Shown on the observer page, e.g. "hosted" or "local-fixture". Never inferred from data. */
+    environment?: string;
+  };
+}
+
+interface DispatchContext {
+  actor?: ActorContext;
+  raw?: string;
+}
+
+const INTERNAL_HOST = "internal.marketplace";
+
 /** HTTP and MCP use the same authenticated route implementation, without a network self-call. */
-export function createPlatformHttp(db: Database, market: Marketplace, options: { now?: () => Date; paymentConfigured?: boolean } = {}): PlatformHttp {
+export function createPlatformHttp(db: Database, market: Marketplace, options: PlatformHttpOptions = {}): PlatformHttp {
   const now = options.now ?? (() => new Date());
   const supported = MCP_TOOLS.filter((tool) => !["start_purchase", "purchase_status", "supplier_status", "supplier_listener_tick", "report_pending"].includes(tool.name));
   const mcp = createMcpHandler(createMcpBackend({ clientForToken: (token) => new PlatformClient({
-    baseUrl: "https://internal.marketplace", token, timeoutMs: 60_000, retry: { attempts: 1, baseDelayMs: 0 },
+    baseUrl: `https://${INTERNAL_HOST}`, token, timeoutMs: 60_000, retry: { attempts: 1, baseDelayMs: 0 },
     fetchImpl: (input, init) => handle(new Request(input, init)),
   }) }), { tools: supported, instructions: LIVE_AGENT_INSTRUCTIONS });
 
+  const observerOrigins = new Set(options.observer?.allowedOrigins ?? []);
+  const environment = options.observer?.environment ?? "hosted";
+
+  /** Every authenticated operation is traced after it completes; tracing never changes the response. */
   async function handle(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (url.pathname === "/v1/observer" || url.pathname.startsWith("/v1/observer/")) return observe(request);
+    const startedAt = now();
+    const context: DispatchContext = {};
+    const response = await dispatch(request, context);
+    if (context.actor) await trace(request, url, context, response, startedAt);
+    return response;
+  }
+
+  async function trace(request: Request, url: URL, context: DispatchContext, response: Response, startedAt: Date): Promise<void> {
+    try {
+      const participantId = context.actor!.participantId;
+      const finishedAt = now();
+      if (url.pathname === "/mcp") {
+        const info = context.raw === undefined ? undefined : mcpClientInfo(context.raw);
+        if (info) {
+          await recordSighting(db, { participantId, channel: "mcp", clientName: info.name, at: finishedAt,
+            ...(info.version === undefined ? {} : { clientVersion: info.version }),
+            ...(info.protocolVersion === undefined ? {} : { protocolVersion: info.protocolVersion }) });
+        } else {
+          await touchSighting(db, participantId, "mcp", finishedAt);
+        }
+        return;
+      }
+      // MCP tool calls reach this handler as in-process requests to the internal host.
+      const channel: TraceChannel = url.hostname === INTERNAL_HOST ? "mcp" : "http";
+      if (channel === "http") {
+        const agent = request.headers.get("user-agent");
+        if (agent) await recordSighting(db, { participantId, channel, clientName: agent, at: finishedAt });
+      }
+      const match = operationFor(request.method, url.pathname.split("/").filter(Boolean).map((part) => decodeURIComponent(part)));
+      if (!match || match.polling) return;
+      let body: unknown;
+      try { body = await response.clone().json(); } catch { body = undefined; }
+      const created = response.status < 400 ? idsFromResponse(match.operation, body) : {};
+      const errorCode = response.status >= 400 ? errorCodeFrom(body) : undefined;
+      await recordTrace(db, { participantId, channel, operation: match.operation, status: response.status,
+        ...(errorCode === undefined ? {} : { errorCode }), ...match.ids, ...created, startedAt, finishedAt });
+    } catch {
+      // A missing migration or a trace failure must not fail or alter the participant's operation.
+    }
+  }
+
+  /** Read-only observer projection, authenticated by an operator-issued observer session only. */
+  async function observe(request: Request): Promise<Response> {
+    const origin = request.headers.get("origin");
+    const cors: Record<string, string> = origin !== null && observerOrigins.has(origin)
+      ? { "access-control-allow-origin": origin, vary: "Origin" } : { vary: "Origin" };
+    if (request.method === "OPTIONS") {
+      if (!cors["access-control-allow-origin"]) return new Response(null, { status: 403, headers: cors });
+      return new Response(null, { status: 204, headers: { ...cors, "access-control-allow-methods": "GET",
+        "access-control-allow-headers": "authorization", "access-control-max-age": "600" } });
+    }
+    const headers = { ...cors, "cache-control": "no-store" };
+    try {
+      if (request.method !== "GET") throw new PlatformError(405, "METHOD_NOT_ALLOWED");
+      const bearer = /^Bearer ([^\s]+)$/i.exec(request.headers.get("authorization") ?? "")?.[1];
+      if (!bearer) throw new PlatformError(401, "INVALID_OBSERVER_SESSION");
+      const session = await authenticateObserver(db, bearer, now());
+      const parts = new URL(request.url).pathname.split("/").filter(Boolean).map((value) => decodeURIComponent(value));
+      if (parts.some((part) => !/^[A-Za-z0-9:_-]{1,128}$/.test(part))) throw new PlatformError(400, "INVALID_PATH");
+      if (parts.length === 3 && parts[2] === "runs") return Response.json(await listRuns(db, session), { headers });
+      if (parts.length === 4 && parts[2] === "runs") return Response.json(await runView(db, session, parts[3]!, now(), environment), { headers });
+      throw new PlatformError(404, "NOT_FOUND");
+    } catch (error) {
+      if (error instanceof PlatformError) return Response.json({ error: error.code, code: error.code }, { status: error.status, headers });
+      if (error instanceof URIError) return Response.json({ error: "INVALID_PATH", code: "INVALID_PATH" }, { status: 400, headers });
+      return Response.json({ error: "PLATFORM_UNAVAILABLE", code: "PLATFORM_UNAVAILABLE" }, { status: 503, headers });
+    }
+  }
+
+  async function dispatch(request: Request, context: DispatchContext): Promise<Response> {
     let actor: ActorContext | undefined;
     try {
       const bearer = /^Bearer ([^\s]+)$/i.exec(request.headers.get("authorization") ?? "")?.[1];
       if (!bearer) throw new IdentityError(401, "INVALID_CREDENTIAL");
       actor = await authenticate(db, bearer, now());
+      context.actor = actor;
       const url = new URL(request.url);
       if (url.pathname === "/mcp") {
         if (request.method !== "POST") return methodNotAllowed("POST");
         const { raw } = await jsonBody(request);
+        context.raw = raw;
         return mcp(new Request(request.url, { method: "POST", headers: request.headers, body: raw, signal: request.signal }));
       }
       const parts = url.pathname.split("/").filter(Boolean).map((value) => decodeURIComponent(value));

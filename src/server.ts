@@ -6,6 +6,8 @@
  *   DB_CONNECTION           Postgres URL for a login role in marketplace_app
  *   DB_CA_FILE              CA certificate for TLS verification (Supabase: prod-ca-2021.crt)
  *   DB_SSL=disable          only accepted for a database on localhost
+ *   OBSERVER_ALLOWED_ORIGINS comma-separated https origins of the read-only observer page (CORS)
+ *   DEPLOYMENT_ENVIRONMENT  label shown on the observer page (default "hosted")
  */
 import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -35,6 +37,17 @@ export function databaseSsl(env: NodeJS.ProcessEnv, connectionString: string): p
   return env.DB_CA_FILE ? { ca: readFileSync(env.DB_CA_FILE, "utf8") } : true;
 }
 
+/** Exact https origins (or localhost for rehearsal) allowed to call the observer API from a browser. */
+export function observerOrigins(env: NodeJS.ProcessEnv): string[] {
+  const origins = (env.OBSERVER_ALLOWED_ORIGINS ?? "").split(",").map((value) => value.trim()).filter((value) => value !== "");
+  for (const origin of origins) {
+    const url = new URL(origin);
+    const local = url.protocol === "http:" && LOCAL_HOSTS.has(url.hostname);
+    if ((url.protocol !== "https:" && !local) || url.origin !== origin) throw new Error(`OBSERVER_ALLOWED_ORIGINS entry is not an exact https origin: ${origin}`);
+  }
+  return origins;
+}
+
 export function buildDependencies(env: NodeJS.ProcessEnv): { deps: Dependencies; pool?: pg.Pool; notes: string[] } {
   const notes: string[] = [];
   const connectionString = env.DB_CONNECTION;
@@ -53,7 +66,10 @@ export function buildDependencies(env: NodeJS.ProcessEnv): { deps: Dependencies;
     webhookSecret = stripe.webhookSecret;
   }
   const market = new Marketplace(postgresDatabase(pool), { paymentStore, ...(settlement ? { settlement } : {}) });
-  const deps: Dependencies = { platform: createPlatformHttp(postgresDatabase(pool), market, { paymentConfigured: !!settlement && !!webhookSecret }) };
+  const deps: Dependencies = { platform: createPlatformHttp(postgresDatabase(pool), market, {
+    paymentConfigured: !!settlement && !!webhookSecret,
+    observer: { allowedOrigins: observerOrigins(env), environment: env.DEPLOYMENT_ENVIRONMENT ?? "hosted" },
+  }) };
   if (settlement && webhookSecret) deps.stripeWebhook = { settlement, secret: webhookSecret };
   notes.push("Authenticated marketplace API and /mcp configured; database migrations and scoped bot credentials required");
   notes.push(deps.stripeWebhook ? "POST /webhooks/stripe enabled" : "Stripe webhook not configured; hosted payment acceptance remains unverified");
