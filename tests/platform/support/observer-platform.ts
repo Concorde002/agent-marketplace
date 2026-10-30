@@ -4,6 +4,7 @@ import http from "node:http";
 import { PGlite } from "@electric-sql/pglite";
 import { PlatformClient } from "../../../src/agents/client.js";
 import type { Database } from "../../../src/platform/database.js";
+import type { ObserverBus } from "../../../src/platform/observer.js";
 import { createPlatformHttp } from "../../../src/platform/http.js";
 import { Marketplace } from "../../../src/platform/marketplace.js";
 import { PostgresPaymentStore } from "../../../src/payments/postgres-store.js";
@@ -40,6 +41,10 @@ export interface ObserverPlatformOptions {
   otherBuyer?: boolean;
   /** Delay the stubbed provider calls, so a rehearsal shows real waiting rather than instant steps. */
   providerDelayMs?: number;
+  /** Wrap the database, e.g. to slow down or count trace writes. */
+  wrapDb?: (db: Database) => Database;
+  /** Attach the /observer/ws log stream bus. */
+  observer?: ObserverBus;
 }
 
 export interface ObserverPlatform {
@@ -98,7 +103,8 @@ export async function createObserverPlatform(options: ObserverPlatformOptions = 
      values($1,'buyer','Fixture rehearsal','fixture',now() + interval '8 hours') returning id`, [sha256(tokens.observer)])).rows[0]!;
   await db.exec("set role marketplace_app");
 
-  const database: Database = { query: (sql, params) => db.query(sql, params), transaction: (action) => db.transaction((tx) => action(tx)) };
+  const base: Database = { query: (sql, params) => db.query(sql, params), transaction: (action) => db.transaction((tx) => action(tx)) };
+  const database = options.wrapDb ? options.wrapDb(base) : base;
   const delay = options.providerDelayMs ?? 0;
   const sourceText = options.sourceText ?? "Alpha Components manufactures steel components. ISO 9001:2015 certified. Delivery across the EU.";
   const fetcher: typeof fetch = async (input) => {
@@ -116,7 +122,7 @@ export async function createObserverPlatform(options: ObserverPlatformOptions = 
   const paymentStore = new PostgresPaymentStore(database);
   const market = new Marketplace(database, { collector, ted: new TedClient({ fetch: fetcher }), paymentStore,
     settlement: new SettlementService(paymentStore, provider) });
-  const platform = createPlatformHttp(database, market, { paymentConfigured: true,
+  const platform = createPlatformHttp(database, market, { paymentConfigured: true, ...(options.observer ? { observer: options.observer } : {}),
     observerApi: { environment: options.environment ?? "local-fixture", allowedOrigins: options.allowedOrigins ?? [] } });
 
   const server = http.createServer(async (req, res) => {

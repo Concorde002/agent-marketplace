@@ -93,6 +93,9 @@ const ROUTES: { method: string; pattern: RegExp; route: string; operation: strin
   { method: "POST", pattern: /^\/v1\/discoveries\/[^/]+\/resolve$/, route: "/v1/discoveries/{discoveryId}/resolve", operation: "resolve_discovery_participants" },
   { method: "POST", pattern: /^\/v1\/offers\/[^/]+\/acceptances$/, route: "/v1/offers/{offerId}/acceptances", operation: "accept_offer" },
   { method: "POST", pattern: /^\/v1\/orders\/[^/]+\/settle$/, route: "/v1/orders/{orderId}/settle", operation: "settle_order" },
+  { method: "GET", pattern: /^\/v1\/observer\/runs$/, route: "/v1/observer/runs", operation: "observer_list_runs" },
+  { method: "GET", pattern: /^\/v1\/observer\/runs\/[^/]+$/, route: "/v1/observer/runs/{runId}", operation: "observer_get_run" },
+  { method: "OPTIONS", pattern: /^\/v1\/observer(\/.*)?$/, route: "/v1/observer/…", operation: "observer_preflight" },
   { method: "POST", pattern: /^\/mcp$/, route: "/mcp", operation: "mcp" },
   { method: "POST", pattern: /^\/webhooks\/stripe$/, route: "/webhooks/stripe", operation: "stripe_webhook" },
   { method: "GET", pattern: /^\/health$/, route: "/health", operation: "health" },
@@ -140,8 +143,18 @@ function date(value: unknown): string | undefined {
 /** Authenticated routes name the participant; public routes have no caller identity to name. */
 function who(actor: ObserverLog["actor"], path: string): string {
   if (actor) return `${actor.role === "buyer" ? "Buyer" : "Supplier"} ${actor.participantId}`;
+  // The observer API authenticates an observer key, not a participant.
+  if (path === "/v1/observer" || path.startsWith("/v1/observer/")) return "The observer page";
   return path.startsWith("/v1/") || path === "/mcp" ? "An unauthenticated caller" : "A client";
 }
+
+/** Phrases for refusals where the operation name does not read as a verb. */
+const VERBS: Record<string, string> = {
+  unknown_route: "call an unknown route",
+  observer_list_runs: "list runs",
+  observer_get_run: "read a run",
+  observer_preflight: "check cross-origin access",
+};
 
 interface CallFacts {
   operation: string;
@@ -165,13 +178,14 @@ export function describe(facts: CallFacts): { message: string; subject: Subject 
     case "get_request": case "start_discovery": case "request_quote": case "submit_offer":
       subject.requestId = segment(path, 2); break;
     case "get_offer": case "accept_offer": subject.offerId = segment(path, 2); break;
+    case "observer_get_run": subject.requestId = segment(path, 3); break;
     case "get_order": case "settle_order": subject.orderId = segment(path, 2); break;
     case "get_discovery": case "get_discovery_evidence": case "read_discovery_source":
     case "submit_discovery_assessment": case "resolve_discovery_participants": subject.discoveryId = segment(path, 2); break;
   }
 
   if (failed) {
-    const verb = operation === "unknown_route" ? "call an unknown route" : operation.replaceAll("_", " ");
+    const verb = VERBS[operation] ?? operation.replaceAll("_", " ");
     const reason = facts.code ?? `HTTP ${status}`;
     const kind = status >= 500 ? "failed" : "was refused";
     return { message: `${actorName} tried to ${verb} and ${kind}: ${reason}.`, subject };
@@ -262,6 +276,9 @@ export function describe(facts: CallFacts): { message: string; subject: Subject 
       const result = text(res?.result);
       return { message: `Stripe reported ${text(req?.type) ?? "an event"}${subject.orderId ? ` for order ${subject.orderId}` : ""}${result ? `: ${result}` : ": acknowledged"}.`, subject };
     }
+    case "observer_list_runs": return { message: "The observer page listed runs.", subject };
+    case "observer_get_run": return { message: `The observer page read run ${subject.requestId}.`, subject };
+    case "observer_preflight": return { message: "The observer page checked cross-origin access.", subject };
     case "health": return { message: "Health check.", subject };
     case "agent_instructions": return { message: "Agent instructions were read.", subject };
     case "openapi": return { message: "The API description was read.", subject };
@@ -270,7 +287,8 @@ export function describe(facts: CallFacts): { message: string; subject: Subject 
 }
 
 const READ_ONLY = new Set(["get_my_participant", "list_events", "get_request", "get_offer", "get_order", "get_discovery",
-  "get_discovery_evidence", "read_discovery_source", "health", "agent_instructions", "openapi", "search_buyer_notices"]);
+  "get_discovery_evidence", "read_discovery_source", "health", "agent_instructions", "openapi", "search_buyer_notices",
+  "observer_list_runs", "observer_get_run", "observer_preflight"]);
 
 function levelOf(operation: string, status: number): ObserverLog["level"] {
   if (status >= 500) return "error";

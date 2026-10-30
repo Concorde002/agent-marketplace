@@ -38,6 +38,10 @@ interface DispatchContext {
 }
 
 const INTERNAL_HOST = "internal.marketplace";
+/** Longest a response waits for its trace write. A slower write finishes in the background. */
+export const TRACE_BUDGET_MS = 250;
+/** An unchanged client sighting is rewritten at most this often. */
+export const SIGHTING_REFRESH_MS = 30_000;
 
 /** HTTP and MCP use the same authenticated route implementation, without a network self-call. */
 export function createPlatformHttp(db: Database, market: Marketplace, options: PlatformHttpOptions = {}): PlatformHttp {
@@ -50,6 +54,14 @@ export function createPlatformHttp(db: Database, market: Marketplace, options: P
 
   const observerOrigins = new Set(options.observerApi?.allowedOrigins ?? []);
   const environment = options.observerApi?.environment ?? "hosted";
+  // MVP_LIMIT: per-instance write throttle. It only skips redundant bookkeeping; the database stays authoritative.
+  const recentSightings = new Map<string, { identity: string; at: number }>();
+  /** True when the same client was recorded within the refresh window, so this write can be skipped. */
+  const seenRecently = (key: string, identity: string | undefined, at: Date) => {
+    const last = recentSightings.get(key);
+    return last !== undefined && (identity === undefined || last.identity === identity) && at.getTime() - last.at < SIGHTING_REFRESH_MS;
+  };
+  const remember = (key: string, identity: string, at: Date) => recentSightings.set(key, { identity, at: at.getTime() });
 
   /**
    * Every call, including the internal ones an MCP tool makes, emits one stream log. Every authenticated
@@ -62,7 +74,8 @@ export function createPlatformHttp(db: Database, market: Marketplace, options: P
       const startedAt = now();
       const context: DispatchContext = {};
       const response = await dispatch(observed, context);
-      if (context.actor) await trace(observed, url, context, response, startedAt);
+      // Bounded: tracing is bookkeeping and must never hold the participant's answer.
+      if (context.actor) await Promise.race([trace(observed, url, context, response, startedAt), new Promise((resolve) => setTimeout(resolve, TRACE_BUDGET_MS).unref())]);
       return { response, actor: context.actor };
     });
   }
@@ -73,12 +86,17 @@ export function createPlatformHttp(db: Database, market: Marketplace, options: P
       const finishedAt = now();
       if (url.pathname === "/mcp") {
         const info = context.raw === undefined ? undefined : mcpClientInfo(context.raw);
+        const key = `${participantId}|mcp`;
         if (info) {
+          const identity = `${info.name}|${info.version ?? ""}|${info.protocolVersion ?? ""}`;
+          if (seenRecently(key, identity, finishedAt)) return;
           await recordSighting(db, { participantId, channel: "mcp", clientName: info.name, at: finishedAt,
             ...(info.version === undefined ? {} : { clientVersion: info.version }),
             ...(info.protocolVersion === undefined ? {} : { protocolVersion: info.protocolVersion }) });
-        } else {
+          remember(key, identity, finishedAt);
+        } else if (!seenRecently(key, undefined, finishedAt)) {
           await touchSighting(db, participantId, "mcp", finishedAt);
+          remember(key, recentSightings.get(key)?.identity ?? "", finishedAt);
         }
         return;
       }
@@ -86,7 +104,11 @@ export function createPlatformHttp(db: Database, market: Marketplace, options: P
       const channel: TraceChannel = url.hostname === INTERNAL_HOST ? "mcp" : "http";
       if (channel === "http") {
         const agent = request.headers.get("user-agent");
-        if (agent) await recordSighting(db, { participantId, channel, clientName: agent, at: finishedAt });
+        const key = `${participantId}|http`;
+        if (agent && !seenRecently(key, agent, finishedAt)) {
+          await recordSighting(db, { participantId, channel, clientName: agent, at: finishedAt });
+          remember(key, agent, finishedAt);
+        }
       }
       const match = operationFor(request.method, url.pathname.split("/").filter(Boolean).map((part) => decodeURIComponent(part)));
       if (!match || match.polling) return;
