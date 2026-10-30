@@ -12,10 +12,16 @@
     "test:agents": "npm run build && node --test dist/tests/agents/*.test.js",
     "test:sourcing": "npm run build && node --test dist/tests/sourcing/*.test.js",
     "test:e2e": "npm run build && node --test dist/tests/integration/*.test.js",
-    "check": "npm run typecheck && npm test"
+    "check": "npm run typecheck && npm test",
+    "payments:operator": "npm run build --silent && node --env-file-if-exists=.env.local --env-file-if-exists=.dev.vars dist/src/payments/operator-cli.js"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "0.5.13",
     "@types/node": "22.20.5",
+    "@types/pg": "8.23.1",
     "typescript": "5.9.3"
+  },
+  "dependencies": {
+    "pg": "8.23.1"
   }
 }

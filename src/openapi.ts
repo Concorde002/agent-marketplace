@@ -35,6 +35,6 @@ export const openapi = {
         responses: { "501": { description: "Not implemented" } },
       },
     }])),
-    "/webhooks/stripe": { post: { operationId: "stripeWebhook", "x-implemented": false, description: "Planned: Stripe signature authentication, not participant authentication.", responses: { "501": { description: "Not implemented" } } } },
+    "/webhooks/stripe": { post: { operationId: "stripeWebhook", "x-implemented": true, description: "Stripe-only. Authenticated by Stripe signature, not participant authentication. Returns 501 when the server has no webhook secret configured.", responses: { "200": { description: "Verified event recorded (applied, duplicate, or ignored)" }, "400": { description: "Invalid signature" }, "501": { description: "Webhook not configured" } } } },
   },
 };
