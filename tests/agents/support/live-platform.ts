@@ -55,12 +55,14 @@ export interface LivePlatform {
   tokens: { buyer: string; supplier: string };
   actors: { buyer: ActorContext; supplier: ActorContext };
   market: Marketplace;
+  counts: { orders(): Promise<number>; quoteRequests(): Promise<number>; settlements(): Promise<number> };
   close(): Promise<void>;
 }
 
 /** In-memory payment boundary; the provider is stubbed, the settlement rules are real. */
 class MemoryPaymentStore implements PaymentStore {
   private readonly attempts = new Map<string, PaymentAttempt>();
+  claims = 0;
   outcome: "succeeded" | "failed" | "requires_action";
 
   constructor(outcome: "succeeded" | "failed" | "requires_action") {
@@ -86,6 +88,7 @@ class MemoryPaymentStore implements PaymentStore {
       return Promise.resolve({ claimed: false, reason: "run_total_exceeded" });
     }
     this.attempts.set(attempt.orderId, attempt);
+    this.claims += 1;
     return Promise.resolve({ claimed: true });
   }
 
@@ -98,7 +101,12 @@ class MemoryPaymentStore implements PaymentStore {
     if (attempt === undefined || attempt.status !== expected) {
       return Promise.resolve(false);
     }
-    this.attempts.set(orderId, { ...attempt, status: next.status });
+    this.attempts.set(orderId, {
+      ...attempt,
+      status: next.status,
+      ...(next.providerPaymentId === undefined ? {} : { providerPaymentId: next.providerPaymentId }),
+      ...(next.failureCode === undefined ? {} : { failureCode: next.failureCode }),
+    });
     return Promise.resolve(true);
   }
 
@@ -183,11 +191,11 @@ export async function createLivePlatform(options: LivePlatformOptions = {}): Pro
     insert into marketplace.operator_grants(id,role,currency,expires_at,min_delivered_total_minor,max_available_quantity,created_by)
     values('gs','supplier','EUR','2099-01-02Z',${supplierMin},${supplierQuantity},'fixture');
     insert into marketplace.participants(id,grant_id,role,company_name,official_domain,registered_at)
-    values('buyer','gb','buyer','${BUYER_COMPANY}','${BUYER_DOMAIN}',now()),('supplier','gs','supplier','${SUPPLIER_COMPANY}','${SUPPLIER_DOMAIN}',now());
+    values('buyer','gb','buyer','${BUYER_COMPANY}','${BUYER_DOMAIN}',now()),('supplier','gs','supplier','${SUPPLIER_COMPANY}','${supplierDomain}',now());
     insert into marketplace.mandates(participant_id,role,currency,expires_at,max_order_total_minor,max_run_total_minor,allowed_categories,destination)
     values('buyer','buyer','EUR','2099-01-02Z',${buyerMax},${buyerRun},'{components}','EU');
     insert into marketplace.mandates(participant_id,role,currency,expires_at,min_delivered_total_minor,available_quantity,unit,earliest_delivery_at)
-    values('supplier','supplier','EUR','2099-01-02Z',${supplierMin},${supplierQuantity},'box','2026-01-01Z');`);
+    values('supplier','supplier','EUR','2099-01-02Z',${supplierMin},${supplierQuantity},'box','2026-11-15Z');`);
 
   const tokens = { buyer: "fixture-buyer-token", supplier: "fixture-supplier-token" };
   for (const [participantId, token] of [["buyer", tokens.buyer], ["supplier", tokens.supplier]] as const) {
@@ -244,6 +252,11 @@ export async function createLivePlatform(options: LivePlatformOptions = {}): Pro
       supplier: { participantId: "supplier", role: "supplier", demo: true },
     },
     market,
+    counts: {
+      orders: async () => Number(((await db.query("select count(*)::int as n from marketplace.orders")).rows[0] as { n: number }).n),
+      quoteRequests: async () => Number(((await db.query("select count(*)::int as n from marketplace.quote_requests")).rows[0] as { n: number }).n),
+      settlements: async () => paymentStore.claims,
+    },
     close: async () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await db.close();

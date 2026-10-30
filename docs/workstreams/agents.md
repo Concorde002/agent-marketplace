@@ -101,6 +101,41 @@ API. Checked locally: `tests/agents/host.test.ts` covers the host, MCP over HTTP
 grant cap and refusal. A JSON-RPC client drove both bots over HTTP through to paid and refused
 outcomes. Not yet run with a live Grok Bot or Instinct account.
 
+## Live integration (branch `feat/grokbot-actual-integration`, from PR #12 / `9698789`)
+
+The live handler mounts an authenticated 18-tool low-level MCP surface and deliberately excludes the
+five fixture-host tools (`start_purchase`, `purchase_status`, `supplier_status`,
+`supplier_listener_tick`, `report_pending`). Discovery now stops for a **client-written assessment**;
+the buyer runtime was extended accordingly rather than replaced by a backend model.
+
+- `buyer.ts` gained a `live` mode: bind the selected `buyerNoticeNumber`, start discovery, read
+  `get_discovery_evidence`, page each source with `read_discovery_source` (5 sources × 3 pages of
+  8,000 characters, hard caps), call the injected `assess` callback (the client model's work), submit
+  the assessment unchanged, then read the frozen ranking and `resolve_discovery_participants` before
+  quoting. No backend LLM, no seeded supplier, no `publicOrganizationId` fallback.
+- `client.ts` can talk to the live contract (`omitActorIdsFromOffers`): offer participants come from
+  the bearer token, and sending `buyerId`/`supplierId` is rejected by the live handler.
+- Buyer counters that fall below the supplier's private floor are refused by the platform
+  (`POLICY_REFUSAL`). The runner now accepts the standing offer instead of losing the deal, without
+  learning the floor.
+- `tests/agents/live-platform.ts` boots the real authenticated handler, Marketplace and sourcing
+  pipeline on PGlite with stubbed TED/Tavily and a stubbed settlement provider.
+- `tests/agents/live-buyer.test.ts` (7 tests): notice-bound happy path, polling-only path fails,
+  rejected quotation, unconnected lead, budget below floor, prompt-injection source text, page caps.
+- `tests/agents/live-mcp.test.ts` (4 tests): 18 tools advertised and fixture tools absent; the full
+  seven-step sequence through tools only with a hand-written assessment; refusal with no order; the
+  supplier token cannot read or assess the buyer's discovery.
+
+Checks observed on this branch (2026-10-30):
+
+```
+npm run typecheck
+npm run check    # 319 tests, 315 passed, 0 failed, 4 pre-existing TODO
+```
+
+Evidence class: local protocol with fixture data and a stubbed payment provider. No hosted revision,
+no Stripe sandbox charge, no actual Grok or Instinct account.
+
 ## Gaps
 
 - No live Grok Bot account was available, so the vendor-documented custom-MCP path is documented and
@@ -111,10 +146,12 @@ outcomes. Not yet run with a live Grok Bot or Instinct account.
 - The platform must expose `GET /v1/requests/{id}` and `GET /v1/offers/{id}` (scoped), and mount
   `createMcpHandler(createMcpBackend(...))` at `POST /mcp`. Events must carry request/offer/order ids
   in `resourceId` as documented in `docs/agent-setup.md`.
-- Two open contract questions were raised on the PR and block hosted wiring: (a) whether submitting
-  an offer counts as its author's acceptance or both parties must call `acceptOffer`; (b) how the
-  buyer resolves a ranked candidate to a connected `supplierId`, since ranking must not know about
-  membership. Until (b) is answered the runtime takes an injected candidate→participant map.
+- Resolved by the live branch: offer submission records the author's acceptance, so one counterparty
+  acceptance creates the order (PR #12 checkpoint). Candidate→participant resolution also exists
+  (`resolve_discovery_participants`); the injected map is now a fixture-only fallback.
+- The live CLI `buyer` still polls `get_discovery` and has no assessment step, so it cannot run against
+  the live handler (discovery is refused without a bound notice). The live path is the tool sequence
+  driven by the client; a two-phase CLI harness (dump evidence → submit assessment file) is not built.
 - Payment-status timing depends on the platform's `payment_updated` event; a stuck `pending` order is
   reported as failed only after the reporting window, never as paid.
 - No refusal endpoint exists in the contract, so a supplier refusal is recorded locally and expressed
@@ -125,10 +162,13 @@ outcomes. Not yet run with a live Grok Bot or Instinct account.
 
 ## Next task
 
-1. Platform owner: merge the scoped read routes and mount the MCP handler; confirm event resource ids.
-2. Teammate 2: attach a real Grok Bot to the hosted `/mcp`, start the supplier routine, and record
-   the two-chat transcript (buyer instruction → offers → paid → both messages).
-3. Jenya: rehearse the changed-constraint refusal from the host computer using the same harness.
+1. Platform owner: confirm the hosted revision and issue two scoped tokens; `/mcp` must be public
+   HTTPS with the new migration applied.
+2. Teammate 2: attach a real Grok Bot to the hosted `/mcp`, run the buyer prompt and the supplier
+   routine from `docs/agent-setup.md`, and capture the two-chat transcript plus the tool calls.
+3. Teammate 2: add the two-phase CLI harness (evidence dump → assessment file) if the host wants a
+   terminal fallback for the live flow.
+4. Jenya: rehearse the changed-constraint refusal from the host computer using the same sequence.
 
 ## Verification
 
