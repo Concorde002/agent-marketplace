@@ -576,6 +576,7 @@ setInterval(() => { if (state.view && !state.paused) renderElapsed(); }, 1000);
   state.runId = new URLSearchParams(location.hash.slice(1)).get("run") ?? "";
   $("workspace").hidden = false;
   $("pause").hidden = false;
+  document.querySelector(".runbar").hidden = true;
   setConn("slow", "Connecting…");
   void tick();
 })();
