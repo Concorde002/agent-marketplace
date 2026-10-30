@@ -565,7 +565,7 @@ export const MCP_TOOLS: readonly McpToolDefinition[] = [
   {
     name: "get_my_participant",
     description: describe(
-      "Read your own participant identity and operator-bounded mandate from the authenticated bearer token. " +
+      "Read your own participant identity and registration status from the authenticated bearer token. " +
         "Use this low-level tool flow from your actual client model; tool arguments cannot select authority.",
     ),
     inputSchema: emptyArgumentsSchema,

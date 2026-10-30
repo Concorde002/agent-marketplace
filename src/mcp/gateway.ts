@@ -7,7 +7,7 @@ import type {
   SourcingRequest,
 } from "../contracts.js";
 import type { AgentAssessment } from "../sourcing/assessment.js";
-import { MCP_TOOLS, findTool, validateJsonSchema } from "./tools.js";
+import { MCP_TOOLS, validateJsonSchema, type McpToolDefinition } from "./tools.js";
 
 /**
  * Participant-scoped backend used by the MCP gateway.
@@ -122,6 +122,7 @@ class RpcError extends Error {
  */
 export function createMcpHandler(
   backend: McpToolBackend,
+  options: { tools?: readonly McpToolDefinition[] } = {},
 ): (request: Request) => Promise<Response> {
   return async function handle(request: Request): Promise<Response> {
     if (request.method !== "POST") {
@@ -180,7 +181,7 @@ export function createMcpHandler(
     }
 
     try {
-      const result = await dispatch(backend, token, method, params);
+      const result = await dispatch(backend, token, method, params, options.tools ?? MCP_TOOLS);
       return Response.json({ jsonrpc: "2.0", id, result });
     } catch (error) {
       if (error instanceof RpcError) {
@@ -196,6 +197,7 @@ async function dispatch(
   token: string,
   method: string,
   params: Record<string, unknown> | undefined,
+  tools: readonly McpToolDefinition[],
 ): Promise<unknown> {
   switch (method) {
     case "initialize":
@@ -206,14 +208,14 @@ async function dispatch(
       return {};
     case "tools/list":
       return {
-        tools: MCP_TOOLS.map((tool) => ({
+        tools: tools.map((tool) => ({
           name: tool.name,
           description: tool.description,
           inputSchema: tool.inputSchema,
         })),
       };
     case "tools/call":
-      return callTool(backend, token, params);
+      return callTool(backend, token, params, tools);
     default:
       throw new RpcError(-32601, "Method not found");
   }
@@ -223,6 +225,7 @@ async function callTool(
   backend: McpToolBackend,
   token: string,
   params: Record<string, unknown> | undefined,
+  tools: readonly McpToolDefinition[],
 ): Promise<Record<string, unknown>> {
   if (params === undefined) {
     throw new RpcError(-32602, "tools/call requires params");
@@ -238,7 +241,7 @@ async function callTool(
     throw new RpcError(-32602, "tools/call arguments must be an object");
   }
 
-  const tool = findTool(name);
+  const tool = tools.find((candidate) => candidate.name === name);
   if (tool === undefined) {
     throw new RpcError(-32602, `Unknown tool: ${safeIdentifier(name)}`);
   }

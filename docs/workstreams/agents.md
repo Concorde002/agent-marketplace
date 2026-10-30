@@ -26,6 +26,8 @@ another live-data connector or implement Stripe here.
 
 ## Current state (2026-10-30)
 
+Integration checkpoint on `feat/live-marketplace-integration`: six evidence/identity tools are added and the live server mounts an authenticated 18-tool low-level MCP surface. It excludes the five unavailable fixture-host runtime tools. Client agents must read sources and submit their own assessment; the older BuyerRunner polling-only path is not the live semantic workflow. The Sheets timeout fixture cancellation is fixed. Parent full check: 303 passed, 4 TODO, no failures/cancellations; actual Grok/Instinct accounts remain unverified. Continue the [agent owner prompt](../handoffs/2026-10-30-integration-owners.md), not the canned sandbox as a production backend.
+
 Implemented on branch `feat/agent-connectors` (PR pending):
 
 - `config.ts` — environment-only identity, mandate and limits. Every missing/invalid variable is

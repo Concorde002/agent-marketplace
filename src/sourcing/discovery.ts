@@ -219,7 +219,13 @@ export async function hashText(text: string): Promise<string> {
 }
 
 function bundleFingerprint({ bundleFingerprint: _ignored, ...content }: DiscoveryEvidenceBundle): Promise<string> {
-  return hashText(JSON.stringify(content));
+  // JSONB persistence reorders object keys. Integrity must depend on values, not insertion order.
+  return hashText(canonicalJson(content));
+}
+
+export function canonicalJson(content: unknown): string {
+  return JSON.stringify(content, (_key, value: unknown) => isRecord(value)
+    ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, value[key]])) : value);
 }
 
 export function isoTimestamp(value: unknown): number {

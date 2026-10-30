@@ -141,7 +141,7 @@ test("authenticate derives valid buyer and supplier contexts only from persisted
 test("registerIdentity creates a bounded buyer mandate and normalized company identity as marketplace_app", async () => {
   const seeded = await seed("buyer");
   const actor = await authenticate(db as unknown as Queryable, seeded.token, NOW);
-  assert.deepEqual(await register(actor, buyerRegistration()), { participantId: seeded.participantId });
+  assert.deepEqual(await register(actor, buyerRegistration({ company: { name: "Buyer Example Ltd", officialDomain: "https://WWW.BUYER.example/", publicOrganizationId: "EU-123" } })), { participantId: seeded.participantId });
   const { rows } = await db.query<{ company_name: string; official_domain: string; public_org_id: string; registered_at: Date; max_order_total_minor: number; max_run_total_minor: number; allowed_categories: string[]; destination: string }>(
     `select p.company_name, p.official_domain, p.public_org_id, p.registered_at,
             m.max_order_total_minor, m.max_run_total_minor, m.allowed_categories, m.destination

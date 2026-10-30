@@ -18,6 +18,8 @@ This owner implements hosting and Stripe; Jenya does not need to duplicate them.
 
 ## Current state
 
+Integration checkpoint on `feat/live-marketplace-integration`: persistent authenticated routes and `/mcp` are now locally implemented in `src/platform/`, `src/index.ts` and `src/server.ts`, using the existing Postgres schema plus the additive `20261030133000_live_marketplace_api.sql` migration. Token/registration, source-assessment persistence, frozen ranking, post-ranking resolution, scoped events/reads, author-plus-counterparty acceptance and sandbox settlement wiring have local fixture coverage. `npm run check`: 303 passed, 4 TODO, no failures/cancellations. This is **not hosted or named-bot acceptance**. The older baseline below describes main before this integration. Continue with the [owner handoff](../handoffs/2026-10-30-integration-owners.md) and operator issue #11; do not rebuild from the scaffold or auto-apply migrations.
+
 Scaffold implements status/docs endpoints and `POST /webhooks/stripe`. All `/v1/` trading endpoints, including `/v1/orders/{id}/settle`, still return 501. Typed boundaries are drafts; authentication and runtime validation do not exist. No service is hosted.
 
 `src/server.ts` is a Node HTTP entry point (`node dist/src/server.js`) for Cloud Run or local use; `src/server-adapter.ts` passes request bodies through byte-for-byte, caps them at 1 MiB, and turns handler failures into 500 so Stripe retries. Without `STRIPE_WEBHOOK_SECRET` the server runs the scaffold only and the webhook route stays 501.

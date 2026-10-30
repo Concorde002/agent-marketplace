@@ -35,7 +35,7 @@ function domain(value: unknown): string {
   } catch {
     return invalid();
   }
-  const hostname = url.hostname.toLowerCase().replace(/\.$/, "");
+  const hostname = url.hostname.toLowerCase().replace(/\.$/, "").replace(/^www\./, "");
   if (url.protocol !== "https:" || url.username || url.password || url.port || url.pathname !== "/" || isIP(hostname)) invalid();
   if (!/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(hostname)) invalid();
   if (/(^|\.)(localhost|local|localdomain|internal|lan|home|onion|arpa)$/.test(hostname)) invalid();
