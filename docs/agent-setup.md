@@ -232,3 +232,4 @@ met for Grok Bot and disclosed as unmet for Instinct.
 | `no match` after a counter | Floor above buyer budget or revision cap | Correct refusal; do not raise limits to force a deal |
 | `payment failed — requires further action` | Sandbox payment needs customer action | Report as failed; never retry with a different recipient |
 | Duplicate messages | Shared state directory between two runs | Give each participant its own `AGENT_STATE_DIR` |
+| `ALREADY_REGISTERED` after deleting `.agent-state` | The token is registered, but the persisted `participant:id` is gone | Restore the state file, or have the platform owner return the existing id for that token; do not re-provision blindly |
