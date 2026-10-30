@@ -82,6 +82,8 @@ test("filters malformed, incompatible, expired, or incomplete offers", () => {
     offer({ deliveryAt: "2026-02-30T12:00:00Z" }),
     offer({ expiresAt: now }),
     offer({ expiresAt: "2026-10-31T12:00:00" }),
+    offer({ expiresAt: "2026-11-31T12:00:00Z" }),
+    offer({ expiresAt: "2026-10-31T12:00:00+14:30" }),
     offer({ confirmedRequirementKeys: [] }),
     offer({ confirmedRequirementKeys: ["compliant", "compliant"] }),
     offer({ confirmedRequirementKeys: ["compliant", "unrequested"] }),
@@ -103,6 +105,8 @@ test("accepts delivery at now and optional confirmations while treating tax and 
     confirmedRequirementKeys: ["compliant", "recycled"],
   });
   assert.deepEqual(rank([atBoundary]), [atBoundary]);
+  const atDeadline = offer({ deliveryAt: request.deliverBy });
+  assert.deepEqual(rank([atDeadline]), [atDeadline]);
 });
 
 test("collapses identical IDs, but excludes every variant of a conflicting ID", () => {
@@ -115,6 +119,13 @@ test("collapses identical IDs, but excludes every variant of a conflicting ID", 
 
   const otherwiseInvalidConflict = offer({ id: "same", quantity: request.quantity + 1 });
   assert.deepEqual(rank([one, otherwiseInvalidConflict]), []);
+});
+
+test("deeply malformed duplicate payloads fail closed without recursive fingerprinting", () => {
+  let nested: unknown = "invalid";
+  for (let index = 0; index < 20_000; index++) nested = [nested];
+  const malformed = Object.assign(offer({ id: "same" }), { confirmedRequirementKeys: nested }) as Offer;
+  assert.deepEqual(rank([offer({ id: "same" }), malformed]), []);
 });
 
 test("copies only shared offer fields and leaves request and offer inputs unchanged", () => {

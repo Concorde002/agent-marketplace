@@ -21,12 +21,6 @@ interface RankedOffer {
   deliveryAt: number;
 }
 
-const offerFields = [
-  "id", "requestId", "buyerId", "supplierId", "previousOfferId", "quantity", "unit", "destination",
-  "deliveredTotal", "taxMinor", "deliveryMinor", "deliveryAt", "expiresAt", "confirmedRequirementKeys",
-  "termsOrigin", "demo",
-] as const;
-
 /** Ranking only. Ownership, current revisions, mandates, capacity and acceptance remain platform concerns. */
 export class OfferRanker implements Pick<MatchingService, "rankOffers"> {
   private readonly now: () => Date;
@@ -54,23 +48,24 @@ export class OfferRanker implements Pick<MatchingService, "rankOffers"> {
     const now = clock.getTime();
     const validRequest = validateRequest(request, now);
 
-    const groups = new Map<string, { fingerprint: string; value: unknown; conflicting: boolean }>();
+    const groups = new Map<string, { fingerprint: string | undefined; result: RankedOffer | undefined; conflicting: boolean }>();
     for (const value of offers) {
       if (!isRecord(value) || !nonblank(value.id)) continue;
-      const fingerprint = offerFingerprint(value);
+      // Validate before fingerprinting. Invalid arbitrary nesting must not recurse through a serializer.
+      const result = qualifyOffer(value, validRequest, now);
+      const fingerprint = result ? JSON.stringify(result.offer) : undefined;
       const existing = groups.get(value.id);
       if (existing) {
-        if (existing.fingerprint !== fingerprint) existing.conflicting = true;
+        if (!result || !existing.result || existing.fingerprint !== fingerprint) existing.conflicting = true;
       } else {
-        groups.set(value.id, { fingerprint, value, conflicting: false });
+        groups.set(value.id, { fingerprint, result, conflicting: !result });
       }
     }
 
     const ranked: RankedOffer[] = [];
     for (const group of groups.values()) {
       if (group.conflicting) continue;
-      const result = qualifyOffer(group.value, validRequest, now);
-      if (result) ranked.push(result);
+      if (group.result) ranked.push(group.result);
     }
 
     ranked.sort((left, right) => left.amountMinor - right.amountMinor ||
@@ -210,43 +205,6 @@ function timestamp(value: unknown): number {
     if (hours > 14 || (hours === 14 && minutes !== 0)) return Number.NaN;
   }
   return Date.parse(value);
-}
-
-function offerFingerprint(value: RecordValue): string {
-  const fields = offerFields.map((field) => {
-    const present = Object.prototype.hasOwnProperty.call(value, field);
-    const fieldValue = value[field];
-    if (field === "deliveredTotal" && isRecord(fieldValue)) {
-      return [field, present, [
-        Object.prototype.hasOwnProperty.call(fieldValue, "amountMinor"), stableValue(fieldValue.amountMinor),
-        Object.prototype.hasOwnProperty.call(fieldValue, "currency"), stableValue(fieldValue.currency),
-      ]];
-    }
-    return [field, present, stableValue(fieldValue)];
-  });
-  return JSON.stringify(fields);
-}
-
-function stableValue(value: unknown, ancestors = new Set<object>()): unknown {
-  if (value === undefined) return ["undefined"];
-  if (value === null) return ["null"];
-  if (typeof value === "number") return ["number", Number.isNaN(value) ? "NaN" : String(value)];
-  if (typeof value === "string" || typeof value === "boolean") return [typeof value, value];
-  if (typeof value === "bigint") return ["bigint", value.toString()];
-  if (typeof value !== "object") return [typeof value];
-  if (ancestors.has(value)) return ["circular"];
-
-  ancestors.add(value);
-  let result: unknown[];
-  if (Array.isArray(value)) {
-    result = ["array", ...value.map((entry) => stableValue(entry, ancestors))];
-  } else {
-    const objectValue = value as RecordValue;
-    result = ["object", ...Object.keys(objectValue).sort(compareCodepoints)
-      .map((key) => [key, stableValue(objectValue[key], ancestors)])];
-  }
-  ancestors.delete(value);
-  return result;
 }
 
 function compareCodepoints(left: string, right: string): number {
