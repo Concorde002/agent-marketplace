@@ -16,6 +16,9 @@ import { PostgresPaymentStore } from "./payments/postgres-store.js";
 import { SettlementService } from "./payments/settlement.js";
 import { StripeClient, StripeSandboxProvider } from "./payments/stripe.js";
 import { toNodeListener } from "./server-adapter.js";
+import { postgresDatabase } from "./platform/database.js";
+import { Marketplace } from "./platform/marketplace.js";
+import { createPlatformHttp } from "./platform/http.js";
 
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 
@@ -34,17 +37,27 @@ export function databaseSsl(env: NodeJS.ProcessEnv, connectionString: string): p
 
 export function buildDependencies(env: NodeJS.ProcessEnv): { deps: Dependencies; pool?: pg.Pool; notes: string[] } {
   const notes: string[] = [];
-  if (!env.STRIPE_WEBHOOK_SECRET) {
-    notes.push("STRIPE_WEBHOOK_SECRET not set: /webhooks/stripe returns 501");
+  const connectionString = env.DB_CONNECTION;
+  if (!connectionString) {
+    if (env.STRIPE_WEBHOOK_SECRET) throw new Error("DB_CONNECTION is required when STRIPE_WEBHOOK_SECRET is set");
+    notes.push("DB_CONNECTION not set: authenticated marketplace API is unavailable");
     return { deps: {}, notes };
   }
-  const stripe = readStripeConfig(env, { requireWebhookSecret: true });
-  const connectionString = env.DB_CONNECTION;
-  if (!connectionString) throw new Error("DB_CONNECTION is required when STRIPE_WEBHOOK_SECRET is set");
   const pool = new pg.Pool({ connectionString, ssl: databaseSsl(env, connectionString), max: 5, connectionTimeoutMillis: 10_000 });
-  const settlement = new SettlementService(new PostgresPaymentStore(pool), new StripeSandboxProvider(new StripeClient(stripe)));
-  notes.push("POST /webhooks/stripe enabled");
-  return { deps: { stripeWebhook: { settlement, secret: stripe.webhookSecret! } }, pool, notes };
+  const paymentStore = new PostgresPaymentStore(pool);
+  let settlement: SettlementService | undefined;
+  let webhookSecret: string | undefined;
+  if (env.STRIPE_SECRET_KEY || env.STRIPE_WEBHOOK_SECRET) {
+    const stripe = readStripeConfig(env, { requireWebhookSecret: !!env.STRIPE_WEBHOOK_SECRET });
+    settlement = new SettlementService(paymentStore, new StripeSandboxProvider(new StripeClient(stripe)));
+    webhookSecret = stripe.webhookSecret;
+  }
+  const market = new Marketplace(postgresDatabase(pool), { paymentStore, ...(settlement ? { settlement } : {}) });
+  const deps: Dependencies = { platform: createPlatformHttp(postgresDatabase(pool), market, { paymentConfigured: !!settlement && !!webhookSecret }) };
+  if (settlement && webhookSecret) deps.stripeWebhook = { settlement, secret: webhookSecret };
+  notes.push("Authenticated marketplace API and /mcp configured; database migrations and scoped bot credentials required");
+  notes.push(deps.stripeWebhook ? "POST /webhooks/stripe enabled" : "Stripe webhook not configured; hosted payment acceptance remains unverified");
+  return { deps, pool, notes };
 }
 
 const isEntryPoint = import.meta.url === new URL(process.argv[1] ?? "", "file://").href;

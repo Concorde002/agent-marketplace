@@ -1,49 +1,28 @@
 # Shared project state
 
-Owner: platform integrator. Other workstreams update their own status files and propose shared-status changes in PR text.
+Updated 30 October 2026 for the reviewed integration merge. This describes source code, not a claim of deployed readiness.
 
-## Current capabilities
+## Implemented in code
 
-- Working label: Agent Marketplace. Final product name is undecided.
-- Public repository: https://github.com/yauhenifutryn/agent-marketplace
-- TypeScript scaffold, Web Fetch handler, typed draft boundaries, team brief, agent instructions, and CI configuration exist.
-- Implemented HTTP behavior: scaffold health, agent setup description, and draft OpenAPI output. Business routes return 501.
-- No deployed service, verified bot integration, authentication, live connector, ranking, order lifecycle, Stripe setup, or in-chat completion reporting yet.
-- Initial agent, sourcing, and integration tests are TODO tasks. Green scaffold CI does not establish those features.
+- Persistent participant-scoped HTTP and 18-tool MCP workflow backed by Postgres, hashed operator-provisioned credentials and bounded mandates.
+- Live public TED buyer retrieval and optional Tavily source reads, discovery-bound client assessments, immutable evidence/ranking, post-ranking domain-based connected-account lookup.
+- Simulated quote/offer exchange, exact-revision acceptances, one order and existing Stripe sandbox settlement/webhook library. Hosted provider confirmation remains unverified.
+- Bounded anonymous TED award-supplier and Polish BZP buyer directory adapters with provenance, ambiguous-identity handling and fixtures. These newer modules are not mounted in HTTP/MCP; directory-compatible identity resolution is still pending.
+- Shared live agent instructions at `/agent.txt`, `/llms.txt` and live MCP initialization; conservative text when platform wiring is absent.
+- Existing bot runtimes/protocol fixtures and separate-client setup documentation. Their presence does not establish actual Grok/Instinct account compatibility.
 
-## Verification at scaffold publication
+## Evidence and limits
 
-- Local `npm run check`: typecheck passed; 5 scaffold tests passed, 8 acceptance TODOs, no failures.
-- Individual agent, sourcing, and integration commands run successfully but contain only TODO acceptance tasks. They do not verify those features yet.
-- Fresh-context scaffold review completed after resolving the public-status path. Initial [GitHub CI run](https://github.com/yauhenifutryn/agent-marketplace/actions/runs/41041768931) succeeded for the platform, agent, sourcing, and integration check groups. This verifies scaffold compilation/tests, including explicit TODOs; no hosted marketplace run exists yet.
+The source-adapter revision passed typecheck and 316 fixture tests, with 4 explicit TODOs and no failures/cancellations. Four PR CI groups passed. The final main-compatible instruction revision passed typecheck and 318 tests, with 4 explicit TODOs and no failures/cancellations. Fresh scoped source/integration/instruction reviews returned ship; the documented ingress and hosted acceptance limitations remain. Fresh anonymous adapter reads returned current buyer notices and historical supplier leads; source receipts are in the supplier-data notes. An independent scoped adapter review found no blocker.
 
-## Next integration step
+Local PGlite/mocked-provider tests do not prove hosted migrations, real concurrent Postgres behavior, two actual bot sessions, or provider-confirmed sandbox settlement. Do not advertise `marketplaceReady: true` from these checks. There is no automatic startup migration or in-memory production fallback.
 
-1. Assign GitHub handles to the three human owners and grant collaborators write access.
-2. Platform owner implements scoped registration/request storage and coordinates contract validation.
-3. Agent owner proves two actual clients can authenticate/call tools and that the supplier loop stays active.
-4. Jenya + Codex implement live source retrieval and inspect two plausible buyer/supplier cases.
-5. Integrate these first pieces before extending negotiation and payment.
+## Remaining owner tasks
 
-## Clarified responsibilities and result reporting
+1. Backend/source developer: mount the structured directory path through authenticated tools, coordinate source-native buyer provenance and exact compatible identifiers without fabricated domains, persist evidence and freeze comparison before account lookup. Review ingress deadline/cancellation and remaining deployment configuration.
+2. Bot developer: verify actual products/versions and two scoped connections; keep supplier execution active, submit source-bound assessments, read authoritative outcomes and report accurately in each client chat. No email or real-company outreach.
+3. Dashboard developer: follow [the three-minute observer handoff](handoffs/2026-10-30-three-minute-demo.md). Build a read-only selected-run view, not a customer trading UI. The dashboard is not implemented yet.
+4. Operator: verify deployed commit/trigger, apply reviewed migrations explicitly, securely provision scoped accounts/mandates and confirm Stripe sandbox/webhook readiness. No credentials in Git or prompts.
+5. Jenya/team: qualify primary/backup scenarios and complete success/refusal rehearsals. The challenge deck requires an autonomous closed deal; a discovery-only visualization does not meet that requirement. Organizer acceptance of sandbox settlement and prior-run receipts remains unconfirmed.
 
-- Teammate 1 builds the hosted backend, accounts, order rules, Stripe sandbox, demo documents, and authoritative status/events.
-- Teammate 2 connects the actual bots, keeps the supplier listener running, enables autonomous offer exchange, and makes both bots report the result in their existing chats. This includes implementation and verification, not just checking that a URL opens.
-- Jenya + Codex implement live-data pulling, extraction, and matching; Jenya personally selects and inspects a primary real-data scenario plus a backup, coordinates integration, and leads end-to-end rehearsal.
-- Prepared cases do not preload or force supplier matches. Sources must be retrieved during the run, and incompatible limits must produce refusal.
-- Email and a separate notification service are outside the MVP. Bot result reporting is required; failure messages matter as much as success messages.
-- Workstream owners test and submit small PRs throughout the build. Platform owner controls shared wiring/contracts/status; Jenya leads overall acceptance.
-
-## Unconfirmed
-
-- Exact Grokbot/Instinct client products, versions, and supported integration interfaces.
-- Primary/backup real company cases and fresh accessibility of their sources.
-- Organizer acceptance of simulated agreement with sandbox settlement.
-- Host's method of demonstrating a backend-only entry from the submission URL.
-- Human owners' GitHub handles and the actual code-freeze deadline.
-
-## Where to look
-
-`TEAM_BRIEF.md`: full target and acceptance criteria. `docs/INTERFACES.md` and `src/contracts.ts`: boundaries. `docs/workstreams/`: each owner's current evidence and next step. Pull current Git state before relying on this status.
-
-Local `.agent/` files are tool-managed private execution context. They are ignored and must not be published as shared team documentation.
+Jev is assessed as an optional relevance/CPV-choice experiment only, not integrated or required. No model call, key access or billing operation was performed by that assessment. See [ADR 0001](architecture/0001-lean-procurement-directory.md), [source evidence](supplier-data-sources.md) and [owner handoffs](handoffs/2026-10-30-integration-owners.md).

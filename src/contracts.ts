@@ -72,6 +72,8 @@ export interface SourcingRequest {
   maximumDeliveredTotal: Money;
   deliverBy: IsoDateTime;
   requirements: Requirement[];
+  /** Selected real TED notice, bound to this buyer request before discovery. */
+  buyerNoticeNumber?: string;
   demo: true;
 }
 

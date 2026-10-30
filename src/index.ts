@@ -1,16 +1,12 @@
-import { openapi } from "./openapi.js";
+import { liveOpenapi, openapi } from "./openapi.js";
+import { LIVE_AGENT_INSTRUCTIONS, SCAFFOLD_AGENT_INSTRUCTIONS } from "./agents/instructions.js";
 import type { SettlementService } from "./payments/settlement.js";
-
-const agentInstructions = `Agent Marketplace is a backend-only demo project.
-Status: scaffold. Trading, authentication, live sourcing, and payments are not implemented.
-Read /openapi.json for implemented and proposed routes. Do not attempt real purchases.
-Future setup requires a service URL, a scoped demo credential, company context, and a mandate.
-A company description alone is not authorization to represent that organization.
-`;
+import type { PlatformHttp } from "./platform/http.js";
 
 /** Server-held wiring. Absent pieces stay explicitly unimplemented (501), never faked. */
 export interface Dependencies {
   stripeWebhook?: { settlement: SettlementService; secret: string };
+  platform?: PlatformHttp;
 }
 
 export async function handleRequest(request: Request, deps: Dependencies = {}): Promise<Response> {
@@ -19,17 +15,21 @@ export async function handleRequest(request: Request, deps: Dependencies = {}): 
   if (path === "/webhooks/stripe" && deps.stripeWebhook) {
     return deps.stripeWebhook.settlement.handleWebhook(request, deps.stripeWebhook.secret);
   }
-  if (["/health", "/agent.txt", "/openapi.json"].includes(path)) {
+  if (deps.platform && (path.startsWith("/v1/") || path === "/mcp")) return deps.platform.handle(request);
+  if (["/health", "/agent.txt", "/llms.txt", "/openapi.json"].includes(path)) {
     if (request.method !== "GET") {
       return Response.json({ error: "METHOD_NOT_ALLOWED" }, { status: 405, headers: { Allow: "GET" } });
     }
     if (path === "/health") {
+      if (deps.platform) return Response.json({ status: "demo-api", demo: true, marketplaceReady: false,
+        capabilities: await deps.platform.readiness(), note: "API availability is not proof of named-client or provider-confirmed end-to-end acceptance" });
       return Response.json({ status: "scaffold", demo: true, marketplaceReady: false });
     }
-    if (path === "/agent.txt") {
-      return new Response(agentInstructions, { headers: { "Content-Type": "text/plain; charset=utf-8" } });
+    if (path === "/agent.txt" || path === "/llms.txt") {
+      const instructions = deps.platform ? LIVE_AGENT_INSTRUCTIONS : SCAFFOLD_AGENT_INSTRUCTIONS;
+      return new Response(instructions, { headers: { "Content-Type": "text/plain; charset=utf-8" } });
     }
-    return Response.json(openapi);
+    return Response.json(deps.platform ? liveOpenapi() : openapi);
   }
   // MVP_LIMIT: no business implementation yet. Replace through reviewed workstream PRs.
   if (path.startsWith("/v1/") || path === "/webhooks/stripe") {
