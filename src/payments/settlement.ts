@@ -6,7 +6,8 @@ export type AttemptUpdate = { status: PaymentStatus; providerPaymentId?: string;
 
 /**
  * Persistence boundary for payments. The production implementation belongs to the platform storage
- * work (D1 migrations); `claimAttempt` must be one atomic statement guarded by UNIQUE(order_id).
+ * work; on Postgres, `claimAttempt` calls marketplace.claim_payment_attempt(), which locks the buyer's
+ * mandate row. A plain INSERT ... SELECT SUM(...) is not safe under READ COMMITTED.
  */
 export interface PaymentStore {
   getCredential(participantId: ParticipantId): Promise<PaymentCredential | undefined>;

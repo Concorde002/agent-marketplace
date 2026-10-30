@@ -1,4 +1,5 @@
 import { openapi } from "./openapi.js";
+import type { SettlementService } from "./payments/settlement.js";
 
 const agentInstructions = `Agent Marketplace is a backend-only demo project.
 Status: scaffold. Trading, authentication, live sourcing, and payments are not implemented.
@@ -7,8 +8,17 @@ Future setup requires a service URL, a scoped demo credential, company context, 
 A company description alone is not authorization to represent that organization.
 `;
 
-export async function handleRequest(request: Request): Promise<Response> {
+/** Server-held wiring. Absent pieces stay explicitly unimplemented (501), never faked. */
+export interface Dependencies {
+  stripeWebhook?: { settlement: SettlementService; secret: string };
+}
+
+export async function handleRequest(request: Request, deps: Dependencies = {}): Promise<Response> {
   const path = new URL(request.url).pathname;
+  // Authenticated by Stripe's signature over the raw body, not by a participant credential.
+  if (path === "/webhooks/stripe" && deps.stripeWebhook) {
+    return deps.stripeWebhook.settlement.handleWebhook(request, deps.stripeWebhook.secret);
+  }
   if (["/health", "/agent.txt", "/openapi.json"].includes(path)) {
     if (request.method !== "GET") {
       return Response.json({ error: "METHOD_NOT_ALLOWED" }, { status: 405, headers: { Allow: "GET" } });
