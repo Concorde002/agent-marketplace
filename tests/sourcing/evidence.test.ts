@@ -213,3 +213,28 @@ test("an existing ranker expires rather than becoming reusable rehearsal memory"
 test("conflicting source records cannot masquerade behind one URL/time/hash", () => {
   assert.throws(() => makeRanker({ ...run, sources: [source, { ...source, text: "Different content" }] }), /conflicting source/i);
 });
+
+test("public organization identifiers must agree with the extracted identity", () => {
+  const ranker = makeRanker({ ...run, companies: [{ name: "alpha", officialDomain: "alpha.example.com", publicOrganizationId: "A" }] });
+  for (const publicOrganizationId of [undefined, "B", "A"]) {
+    const input = candidate("alpha.example.com", [industrial, quality]);
+    if (publicOrganizationId !== undefined) input.company.publicOrganizationId = publicOrganizationId;
+    const result = ranker.rankEvidence(request, [input])[0]!;
+    assert.equal(result.eligible, publicOrganizationId === "A" ? "yes" : "conditional");
+  }
+});
+
+test("conflicting extracted company names require identity resolution", () => {
+  assert.throws(() => makeRanker({ ...run, companies: [
+    { name: "alpha", officialDomain: "alpha.example.com" },
+    { name: "Different Company", officialDomain: "ALPHA.EXAMPLE.COM" },
+  ] }), /conflicting source identity/i);
+});
+
+test("the five-minute consumption boundary is inclusive and expires one millisecond later", () => {
+  let clock = new Date(Date.parse(run.completedAt) + 300_000);
+  const ranker = new EvidenceRanker(run, { now: () => clock });
+  assert.equal(ranker.rankEvidence(request, [candidate("alpha.example.com", [industrial, quality])])[0]!.eligible, "yes");
+  clock = new Date(clock.getTime() + 1);
+  assert.throws(() => ranker.rankEvidence(request, []), /expired/i);
+});
