@@ -295,6 +295,7 @@ export function createPlatformHttp(db: Database, market: Marketplace, options: P
       throw new PlatformError(404, "NOT_FOUND");
     } catch (error) {
       if (error instanceof PlatformError || error instanceof IdentityError) return json({ error: error.code, code: error.code,
+        ...(error instanceof IdentityError && error.detail ? { message: error.detail } : {}),
         ...(error.code === "ALREADY_REGISTERED" && actor ? { participantId: actor.participantId } : {}) }, error.status);
       if (error instanceof DiscoveryInputError) return json({ error: error.code, code: error.code }, error.code === "FORBIDDEN" ? 403 : 400);
       if (error instanceof PaymentRefusedError) return json({ error: error.code, code: error.code }, 403);

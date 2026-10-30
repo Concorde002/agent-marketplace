@@ -296,7 +296,18 @@ test("invalid dates reject calendar normalization, missing timezone, invalid off
   ]) {
     await assert.rejects(register(actor, supplierRegistration({ mandate: { ...supplierRegistration().mandate, expiresAt } })), (error) => expectIdentity(error, 400, "INVALID_REGISTRATION"));
   }
-  await assert.rejects(register(actor, supplierRegistration({ mandate: { ...supplierRegistration().mandate, earliestDeliveryAt: "2027-07-01T00:00:00Z" } })), (error) => expectIdentity(error, 400, "INVALID_REGISTRATION"));
+});
+
+test("a supplier may deliver after its mandate expires and bad fields are named", async () => {
+  const seeded = await seed("supplier");
+  const actor = await authenticate(db as unknown as Queryable, seeded.token, NOW);
+  const { unit: _unit, ...withoutUnit } = supplierRegistration().mandate;
+  await assert.rejects(register(actor, supplierRegistration({ mandate: withoutUnit as never })),
+    (error) => expectIdentity(error, 400, "INVALID_REGISTRATION") && /missing field\(s\): unit/.test((error as IdentityError).detail ?? ""));
+  const mandate = supplierRegistration().mandate;
+  const later = new Date(Date.parse(mandate.expiresAt) + 7 * 86_400_000).toISOString();
+  const registered = await register(actor, supplierRegistration({ mandate: { ...mandate, earliestDeliveryAt: later } }));
+  assert.ok(registered);
 });
 
 test("money and quantity require safe integers and currencies must agree", async () => {

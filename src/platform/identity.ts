@@ -4,20 +4,24 @@ import type { ActorContext, CompanyIdentity, Money, RegistrationInput } from "..
 import type { Queryable } from "../payments/postgres-store.js";
 
 export class IdentityError extends Error {
-  constructor(readonly status: number, readonly code: string) {
+  /** `detail` names the rejected field so a bot can correct its input; it never echoes submitted values. */
+  constructor(readonly status: number, readonly code: string, readonly detail?: string) {
     super(code);
     this.name = "IdentityError";
   }
 }
 
-function invalid(): never {
-  throw new IdentityError(400, "INVALID_REGISTRATION");
+function invalid(detail?: string): never {
+  throw new IdentityError(400, "INVALID_REGISTRATION", detail);
 }
 
 function object(value: unknown, required: string[], optional: string[] = []): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) invalid();
   const record = value as Record<string, unknown>;
-  if (required.some((key) => !Object.hasOwn(record, key)) || Object.keys(record).some((key) => !required.includes(key) && !optional.includes(key))) invalid();
+  const missing = required.filter((key) => !Object.hasOwn(record, key));
+  if (missing.length) invalid(`missing field(s): ${missing.join(", ")}`);
+  const extra = Object.keys(record).filter((key) => !required.includes(key) && !optional.includes(key));
+  if (extra.length) invalid(`unexpected field(s): ${extra.slice(0, 5).map((key) => key.slice(0, 40)).join(", ")}; allowed: ${[...required, ...optional].join(", ")}`);
   return record;
 }
 
@@ -28,17 +32,18 @@ function text(value: unknown, maxLength: number): string {
 
 /** Store the hostname, as used by candidate/account matching. This validates identity, not DNS/SSRF. */
 function domain(value: unknown): string {
-  if (typeof value !== "string" || value.length > 512 || /[\s\\@%?#]/.test(value) || !/^(?:https:\/\/)?[^/]+\/?$/i.test(value)) invalid();
+  const bad: () => never = () => invalid("officialDomain must be a bare public hostname such as example.com");
+  if (typeof value !== "string" || value.length > 512 || /[\s\\@%?#]/.test(value) || !/^(?:https:\/\/)?[^/]+\/?$/i.test(value)) bad();
   let url: URL;
   try {
     url = new URL(value.includes("://") ? value : `https://${value}`);
   } catch {
-    return invalid();
+    return bad();
   }
   const hostname = url.hostname.toLowerCase().replace(/\.$/, "").replace(/^www\./, "");
-  if (url.protocol !== "https:" || url.username || url.password || url.port || url.pathname !== "/" || isIP(hostname)) invalid();
-  if (!/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(hostname)) invalid();
-  if (/(^|\.)(localhost|local|localdomain|internal|lan|home|onion|arpa)$/.test(hostname)) invalid();
+  if (url.protocol !== "https:" || url.username || url.password || url.port || url.pathname !== "/" || isIP(hostname)) bad();
+  if (!/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(hostname)) bad();
+  if (/(^|\.)(localhost|local|localdomain|internal|lan|home|onion|arpa)$/.test(hostname)) bad();
   return hostname;
 }
 
@@ -51,43 +56,45 @@ function company(value: unknown): CompanyIdentity {
 
 function money(value: unknown, minimum: number): Money {
   const input = object(value, ["amountMinor", "currency"]);
-  if (typeof input.amountMinor !== "number" || !Number.isSafeInteger(input.amountMinor) || input.amountMinor < minimum) invalid();
-  if (typeof input.currency !== "string" || !/^[A-Z]{3}$/.test(input.currency)) invalid();
+  if (typeof input.amountMinor !== "number" || !Number.isSafeInteger(input.amountMinor) || input.amountMinor < minimum) invalid(`amountMinor must be an integer in minor units (cents), at least ${minimum}`);
+  if (typeof input.currency !== "string" || !/^[A-Z]{3}$/.test(input.currency)) invalid("currency must be a three-letter uppercase code such as EUR");
   return { amountMinor: input.amountMinor, currency: input.currency };
 }
 
 /** Date.parse alone rolls impossible calendar dates forward; require an explicit RFC3339 date first. */
-function dateTime(value: unknown): string {
-  if (typeof value !== "string") invalid();
+function dateTime(value: unknown, field = "date"): string {
+  const bad: () => never = () => invalid(`${field} must be an RFC 3339 date-time with a timezone, e.g. 2026-11-06T12:00:00Z`);
+  if (typeof value !== "string") bad();
   const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,3})?(Z|[+-](\d{2}):(\d{2}))$/.exec(value);
-  if (!match) invalid();
+  if (!match) bad();
   const [, y, m, d, h, minute, s, , offsetHour, offsetMinute] = match;
   const year = Number(y), month = Number(m), day = Number(d);
   const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
   const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-  if (year === 0 || month < 1 || month > 12 || day < 1 || day > days[month - 1]! || Number(h) > 23 || Number(minute) > 59 || Number(s) > 59 || Number(offsetHour ?? 0) > 23 || Number(offsetMinute ?? 0) > 59) invalid();
+  if (year === 0 || month < 1 || month > 12 || day < 1 || day > days[month - 1]! || Number(h) > 23 || Number(minute) > 59 || Number(s) > 59 || Number(offsetHour ?? 0) > 23 || Number(offsetMinute ?? 0) > 59) bad();
   const parsed = new Date(value);
-  if (!Number.isFinite(parsed.getTime())) invalid();
+  if (!Number.isFinite(parsed.getTime())) bad();
   return parsed.toISOString();
 }
 
 function registration(value: unknown, actor: ActorContext, now: Date): RegistrationInput {
   const input = object(value, ["company", "role", "mandate", "demo"]);
-  if (input.demo !== true || (input.role !== "buyer" && input.role !== "supplier")) invalid();
+  if (input.demo !== true) invalid("demo must be true");
+  if (input.role !== "buyer" && input.role !== "supplier") invalid("role must be buyer or supplier");
   if (input.role !== actor.role) throw new IdentityError(403, "ROLE_MISMATCH");
   const identity = company(input.company);
   const fields = input.role === "buyer"
     ? ["maximumOrderTotal", "maximumRunTotal", "allowedCategories", "destination", "expiresAt", "sandboxOnly"]
     : ["minimumDeliveredTotal", "availableQuantity", "unit", "earliestDeliveryAt", "expiresAt", "sandboxOnly"];
   const mandate = object(input.mandate, fields);
-  if (mandate.sandboxOnly !== true) invalid();
-  const expiresAt = dateTime(mandate.expiresAt);
+  if (mandate.sandboxOnly !== true) invalid("mandate.sandboxOnly must be true");
+  const expiresAt = dateTime(mandate.expiresAt, "mandate.expiresAt");
   if (new Date(expiresAt).getTime() <= now.getTime()) throw new IdentityError(403, "MANDATE_EXPIRED");
   if (input.role === "buyer") {
     const maximumOrderTotal = money(mandate.maximumOrderTotal, 1);
     const maximumRunTotal = money(mandate.maximumRunTotal, 1);
-    if (maximumOrderTotal.currency !== maximumRunTotal.currency || maximumOrderTotal.amountMinor > maximumRunTotal.amountMinor) invalid();
-    if (!Array.isArray(mandate.allowedCategories) || mandate.allowedCategories.length < 1 || mandate.allowedCategories.length > 50) invalid();
+    if (maximumOrderTotal.currency !== maximumRunTotal.currency || maximumOrderTotal.amountMinor > maximumRunTotal.amountMinor) invalid("maximumOrderTotal must use the same currency as maximumRunTotal and not exceed it");
+    if (!Array.isArray(mandate.allowedCategories) || mandate.allowedCategories.length < 1 || mandate.allowedCategories.length > 50) invalid("allowedCategories must be a list of 1-50 category names");
     const allowedCategories = mandate.allowedCategories.map((value: unknown) => text(value, 100));
     if (new Set(allowedCategories).size !== allowedCategories.length) invalid();
     return {
@@ -95,9 +102,9 @@ function registration(value: unknown, actor: ActorContext, now: Date): Registrat
       mandate: { maximumOrderTotal, maximumRunTotal, allowedCategories, destination: text(mandate.destination, 500), expiresAt, sandboxOnly: true },
     };
   }
-  if (typeof mandate.availableQuantity !== "number" || !Number.isInteger(mandate.availableQuantity) || mandate.availableQuantity < 1 || mandate.availableQuantity > 2147483647) invalid();
-  const earliestDeliveryAt = dateTime(mandate.earliestDeliveryAt);
-  if (new Date(earliestDeliveryAt).getTime() > new Date(expiresAt).getTime()) invalid();
+  if (typeof mandate.availableQuantity !== "number" || !Number.isInteger(mandate.availableQuantity) || mandate.availableQuantity < 1 || mandate.availableQuantity > 2147483647) invalid("availableQuantity must be a positive integer");
+  // Delivery may fall after the mandate expires: expiresAt bounds when offers can be made, not when goods arrive.
+  const earliestDeliveryAt = dateTime(mandate.earliestDeliveryAt, "mandate.earliestDeliveryAt");
   return {
     company: identity, role: "supplier", demo: true,
     mandate: {
