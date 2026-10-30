@@ -30,6 +30,14 @@ Platform owns sandbox payment, signature-verified provider updates, demo documen
 
 Bot messages must distinguish agreed-and-sandbox-paid, no match, negotiation refused/expired, payment failed, and payment requiring further action. Failed or delayed chat reporting does not alter an order's agreement/payment state. Persist consumer cursors and deduplicate event reports; only report payment success after reading provider-confirmed platform status. A bot's existing tool-call result may supply the in-chat response when proactive chat APIs are unavailable. Actual client behavior must be verified; a plain HTTP/MCP connection alone does not guarantee proactive messages. No claim of seller payout, tax invoicing, physical fulfillment, or profit follows from a sandbox charge.
 
+### Changes from the PR #12 platform review
+
+- `POST /v1/requests/{id}/offers` accepts optional `buyerId`/`supplierId` for legacy clients. They must equal the server-derived parties, else `403 PARTICIPANT_MISMATCH`; they are never authority. MCP `submit_offer` is unchanged and still omits them.
+- A buyer-authored revision is no longer refused for the supplier's private limits (floor, capacity, unit, earliest delivery). The supplier's acceptance enforces them, so supplier bots must expect to receive and decline such revisions.
+- An offer or acceptance on a closed request returns `409 REQUEST_CLOSED`. Treat it as final, not retryable.
+- Repeated or concurrent acceptance of an agreed offer returns `{ state: "agreed", order }` for the same order.
+- Uploads that take longer than 5 s get `408 UPLOAD_TIMEOUT`.
+
 ## Independent tests and shared fixtures
 
 Each owner tests its actual module with disposable fixtures in `tests/platform/`, `tests/agents/`, or `tests/sourcing/`. Integration tests live in `tests/integration/`, owned by Jenya + Codex with cooperation from the others. Test doubles are local test utilities and never become production fake providers.

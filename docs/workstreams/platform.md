@@ -1,6 +1,6 @@
 # Platform workstream
 
-Human owner: teammate 1, GitHub handle unassigned. Agent must read root `AGENTS.md` first.
+Human owner: Maksym (teammate 1). Agent must read root `AGENTS.md` first.
 
 ## Owns
 
@@ -18,28 +18,34 @@ This owner implements hosting and Stripe; Jenya does not need to duplicate them.
 
 ## Current state
 
-Integration checkpoint on `feat/live-marketplace-integration`: persistent authenticated routes and `/mcp` are now locally implemented in `src/platform/`, `src/index.ts` and `src/server.ts`, using the existing Postgres schema plus the additive `20261030133000_live_marketplace_api.sql` migration. Token/registration, source-assessment persistence, frozen ranking, post-ranking resolution, scoped events/reads, author-plus-counterparty acceptance and sandbox settlement wiring have local fixture coverage. `npm run check`: 303 passed, 4 TODO, no failures/cancellations. This is **not hosted or named-bot acceptance**. The older baseline below describes main before this integration. Continue with the [owner handoff](../handoffs/2026-10-30-integration-owners.md) and operator issue #11; do not rebuild from the scaffold or auto-apply migrations.
+Branch `maksym/live-integration-review`, from `9698789` on `feat/live-marketplace-integration` (PR #12), issue #11. Locally implemented and tested: scoped token authentication and bounded registration, persistent discovery evidence and client assessment, frozen ranking, post-ranking account resolution, offers with both persisted acceptances, one order per request, and Stripe sandbox settlement through `POST /v1/orders/{id}/settle`. HTTP and `/mcp` share one implementation. `POST /webhooks/stripe` is proven hosted (below).
 
-Scaffold implements status/docs endpoints and `POST /webhooks/stripe`. All `/v1/` trading endpoints, including `/v1/orders/{id}/settle`, still return 501. Typed boundaries are drafts; authentication and runtime validation do not exist. No service is hosted.
+**Not hosted.** Cloud Run still serves the pre-PR #12 revision (`/health` reports `scaffold`, `/mcp` 404, `/v1/*` 501). The Supabase project does not yet have `20261030133000_live_marketplace_api.sql` and has no operator grants, participants, credentials, or saved cards. `marketplaceReady` stays `false`.
 
-`src/server.ts` is a Node HTTP entry point (`node dist/src/server.js`) for Cloud Run or local use; `src/server-adapter.ts` passes request bodies through byte-for-byte, caps them at 1 MiB, and turns handler failures into 500 so Stripe retries. Without `STRIPE_WEBHOOK_SECRET` the server runs the scaffold only and the webhook route stays 501.
+Stripe sandbox settlement in `src/payments/` ([payments-design.md](../payments-design.md)): one off-session PaymentIntent per order with an order-derived idempotency key; live keys refused; signed, deduplicated webhooks; buyer-only, amount from the accepted offer, mandate and atomic run-total checks. `MVP_LIMIT`: no supplier payout or Connect account.
 
-Stripe sandbox settlement in `src/payments/` (design: [payments-design.md](../payments-design.md)):
+## Review of PR #12 (issue #11)
 
-- `StripeSandboxProvider`: one confirmed off-session card PaymentIntent per order, idempotency key `order:{id}:v1`, maps success, processing, `authentication_required` (→ `requires_action`), and declines. Plain `fetch`, no SDK.
-- `readStripeConfig`: refuses live keys (`sk_live_`/`rk_live_`) and keys or errors leaking into output.
-- `verifyStripeSignature` and `SettlementService.handleWebhook`: raw-body HMAC-SHA256 check with 300-second tolerance and secret rotation, event deduplication, PaymentIntent/amount/currency matching, terminal states never regress.
-- `SettlementService.settle`: buyer-only, amount taken from the accepted offer, per-order and expiry mandate checks, atomic run-total check, one attempt per order, emits one `payment_updated` event per status change.
-- `PostgresPaymentStore`: the `PaymentStore` over the Supabase schema, through `marketplace.claim_payment_attempt()` and `marketplace.emit_participant_events()`; converts `bigint` amounts to numbers.
-- `npm run payments:operator`: operator-only CLI that creates a demo Customer, saves a test card through a SetupIntent (`visa`, `decline`, or `auth-required` scenario), and runs a smoke charge.
+Fixed, each with a test that failed on `9698789` and passes now:
 
-Missing: the settle route (needs authentication and order creation), a deployment, and a webhook endpoint registered with Stripe for the hosted URL. Saved-card records from the operator CLI are inserted into `payment_credentials` by hand. `MVP_LIMIT`: no supplier payout or Connect account; the test payment lands in the platform sandbox account only.
+1. **Supplier floor oracle.** A buyer counteroffer below the supplier's private floor (or before its earliest delivery date) was refused with `POLICY_REFUSAL`, and refused attempts are not stored, so a buyer could binary-search the floor. Buyer-authored revisions are now checked against request and buyer limits only; the supplier's acceptance still enforces every supplier limit, so no below-floor order can exist.
+2. **Closed request reported as an outage.** An offer or acceptance after the request closed was stopped only by a database trigger and returned `503 PLATFORM_UNAVAILABLE`, which invites retries. It now returns `409 REQUEST_CLOSED`, checked under the request lock.
+3. **Concurrent acceptance.** Simultaneous acceptances of one offer with different idempotency keys: one agreed and the rest got `409 STALE_OFFER` (7 of 8 on real Postgres). The existing-order check now repeats under the request lock, so all return the same agreed order.
+4. **Legacy offer fields.** The CLI runtimes send `Omit<Offer, "id">`, including `buyerId`/`supplierId`, which the schema rejected (`400`). Both are now accepted only when equal to the server-derived parties, refused with `403 PARTICIPANT_MISMATCH` otherwise, and never used as authority. Other unknown fields stay refused.
+5. **Ingress.** The Node adapter buffered uploads with no deadline before the handler's 5 s timer started, and never signalled disconnects. Uploads now have a 5 s whole-body deadline (`408 UPLOAD_TIMEOUT`); a client that disconnects mid-upload is not dispatched or logged as a failure; `request.signal` aborts when the client disconnects during handling.
+
+Reviewed without change: token authentication (SHA-256 lookup, unexpired demo grant, role match); registration within grant under a row lock; tenant scoping of requests, offers, orders, discoveries, and events; idempotency (participant-scoped key, advisory lock, body fingerprint, stored response); lock order request → offer → mandates sorted by id, consistent with the payment claim; discovery evidence and ranking frozen by trigger; account resolution only after ranking, ambiguous identities left as leads.
+
+Open, not fixed here: the invited supplier reads the request's `maximumDeliveredTotal`, the buyer's budget for that request. The contract includes it, but it lets a supplier quote at the ceiling. This is a product decision for the team.
 
 ## Next task
 
-Implement scoped participant registration and request creation with runtime validation and disposable storage tests. Coordinate request/offer read APIs with agent owner. Keep auth context server-derived and mandate limits bounded by operator grants. Then integrate sourcing and negotiation incrementally.
+Operator steps for hosted acceptance (#11), in order. None run at server startup, and no credential or private limit goes into GitHub or an agent prompt.
 
-Payments next: wire `POST /v1/orders/{id}/settle` once authentication and orders exist; after deployment, register `https://<host>/webhooks/stripe` in the Stripe sandbox for `payment_intent.succeeded`, `.payment_failed`, `.requires_action`, and `.processing`, and store its signing secret in the host's secret manager.
+1. Apply `20261030133000_live_marketplace_api.sql` to Supabase (SQL editor or `psql --single-transaction`).
+2. Deploy this branch's commit to Cloud Run with the existing secrets, then confirm `/health` reports `demo-api` with `sourcingReady: true`.
+3. Provision one buyer and one supplier: operator grants, participants, and one bearer token each; store only the SHA-256 token hash in `api_credentials`. Save the buyer's sandbox card with `npm run payments:operator -- setup-buyer` and insert its record into `payment_credentials`.
+4. Run the hosted authenticated scenario: discovery, offer, both acceptances, settle, Stripe-confirmed payment, plus an over-budget refusal.
 
 ### Container image
 
@@ -98,7 +104,16 @@ Webhook handler, local rehearsal (2026-10-30): server on localhost against a dis
 
 Container image, local (2026-10-30): built for arm64 and linux/amd64; inside both builds `npm run check` reported 50 tests, 42 pass, 0 fail, 8 TODO. The 351 MB runtime image contains only `dist/src`, `pg`, and the CA, runs as `node`, and has no `.env`/`.dev.vars`/`whsec` files or key-shaped strings. Scaffold mode: `/health` 200, webhook and settle 501, SIGTERM stops it in under a second. Webhook mode against a disposable Postgres: forged signature 400; signed event applied (pending to succeeded, one event per party); repeat reported as duplicate. `DB_SSL=disable` with a remote host stops startup. From inside the image, a read-only connection to the hosted Supabase project verified TLS with the bundled CA.
 
-Not verified: a hosted endpoint registered with Stripe, a Cloud Run deployment, and settlement through stored orders and the HTTP settle route.
+Hosted webhook (2026-10-30): Stripe sandbox endpoint registered for the Cloud Run URL with the four `payment_intent` events. One €10 sandbox charge's `payment_intent.succeeded` was reported delivered by Stripe and recorded in Supabase `marketplace.webhook_events` with the same event id.
+
+PR #12 review, local (2026-10-30), at `9698789` then this branch:
+
+- `npm run check` at `9698789`: 307 tests, 303 pass, 0 fail, 4 TODO. After fixes: 322 tests, 313 pass, 0 fail, 4 TODO, 5 skipped (the opt-in Postgres tests below). `npm run test:e2e`: 14 tests, 12 pass, 2 TODO, unchanged.
+- `tests/platform/live-marketplace-review.test.ts` (6) and `server-ingress.test.ts` (4) run on PGlite and real sockets. Each of 7 fixes was removed one at a time and a test failed each time.
+- `tests/platform/concurrency-postgres.test.ts` (5) needs real simultaneous connections. Opt-in with `MARKETPLACE_TEST_ADMIN_URL` pointing at a disposable Postgres; it creates and drops its own database. On Postgres 17.11: 8 simultaneous acceptances return one agreed order; two suppliers on one request give one order and `REQUEST_CLOSED`; two 4-unit orders against capacity 5 give one order and `POLICY_REFUSAL`; 6 identical idempotent requests create one; a counteroffer racing an acceptance has one winner. With the race fix removed, the first test fails. `npm run test:platform` with Postgres: 82 tests, 82 pass.
+- Both migrations applied in order with `psql --single-transaction` to Postgres 17.11: 22 tables, RLS on all; new columns and both freeze triggers present; `anon` cannot execute the new functions; re-applying the additive migration fails rather than duplicating.
+
+Not verified: anything on the hosted service beyond the webhook. The PR #12 revision is not deployed and its migration and participants are not provisioned (see Next task).
 
 ## Dependencies and context upkeep
 
