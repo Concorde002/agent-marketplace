@@ -2,7 +2,7 @@
 
 Working label, not a final product name. Backend-only hackathon project for agent sourcing, negotiation, and sandbox settlement using live European public data.
 
-**Current state: scaffold. No live sourcing, authentication, bot integration, trading, Stripe payment, bot completion reporting, or deployment is implemented.**
+**Current code: a persistent sandbox marketplace API/MCP integration, source adapters and client runtimes. Hosted readiness, actual Grok/Instinct compatibility and a complete autonomous sandbox deal are not yet verified.**
 
 Start with the [full team brief](TEAM_BRIEF.md), then [agent instructions](AGENTS.md), [interfaces](docs/INTERFACES.md), and [shared status](docs/STATUS.md).
 
@@ -24,7 +24,7 @@ A "demo case" is a researched real buyer requirement and a plausible real suppli
 
 ## Start locally
 
-Use Node 22 and npm. No credentials are needed for scaffold tests.
+Use Node 22 and npm. The local check suite uses disposable fixtures and needs no production credentials.
 
 ```sh
 git clone https://github.com/yauhenifutryn/agent-marketplace.git
@@ -33,11 +33,11 @@ npm ci --ignore-scripts
 npm run check
 ```
 
-`src/index.ts` exports a Web Fetch handler suitable as a future Workers entry point. There is no deployment configuration or local HTTP server yet. Tests exercise the handler directly without network access.
+`src/index.ts` exports the Web Fetch handler; `src/server.ts` supplies the Node HTTP server and operator-configured Postgres/Stripe sandbox wiring. Missing database configuration leaves business routes unavailable rather than substituting fixtures. Apply reviewed migrations and provision scoped credentials through the backend operator before hosted use.
 
-Implemented: `GET /health`, `GET /agent.txt`, and `GET /openapi.json`. Business routes return HTTP 501. The OpenAPI description marks them `x-implemented: false`; it is a draft, not a completed client contract.
+Public discovery: `GET /health`, `/agent.txt`, `/llms.txt` and `/openapi.json`. With platform configuration, authenticated `/v1/` and `/mcp` expose the implemented low-level workflow. Read the live tool list/OpenAPI and readiness; API availability does not establish a completed demo.
 
-Owner commands: `npm run test:platform`, `npm run test:agents`, `npm run test:sourcing`, and `npm run test:e2e`. Initial agent, sourcing, and end-to-end tests are explicit TODOs, not verified functionality. CI runs all four groups independently and type-checks the whole repository.
+Owner commands: `npm run test:platform`, `npm run test:agents`, `npm run test:sourcing`, and `npm run test:e2e`. CI runs all four groups independently and type-checks the whole repository. Remaining explicit acceptance TODOs are not completed tests. See the current sourcing workstream for measured checks and their limitations.
 
 ## Work in parallel
 
@@ -57,3 +57,11 @@ Once implemented and hosted, each bot needs a service URL, scoped participant cr
 Results appear in each bot's existing conversation: agreed and sandbox-paid, no suitable supplier, failed negotiation, or payment failure. The bot reads authoritative order/payment status and reports it; the platform does not need a separate email service or notification frontend. Email is outside the MVP.
 
 Public evidence is live; company representation and commercial terms are simulated. No real cards, real company outreach, procurement submissions, or binding transactions are part of the demo. Organizer acceptance of sandbox settlement and the host's backend-only presentation remains unconfirmed.
+
+## Developer handoffs
+
+- [Backend/source architecture and remaining directory integration](docs/architecture/0001-lean-procurement-directory.md).
+- [Three-minute demo, observer dashboard and optional Jev experiment](docs/handoffs/2026-10-30-three-minute-demo.md), instructions only; no dashboard or Jev implementation.
+- [Backend and bot owner tasks](docs/handoffs/2026-10-30-integration-owners.md). Start from current main after the integration merge; reconcile the older checkpoint with current code.
+
+Agents should read `/agent.txt` or `/llms.txt` and MCP initialize instructions, then discover the available tools. The newly implemented TED award/BZP directory modules are not yet mounted as hosted tools.
