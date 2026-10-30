@@ -2,11 +2,11 @@
 
 > For agentic workers: implement this plan task by task using the executing-plans skill. Three human teammates own the workstreams below, using their own coding agents. Do not create additional chats, delegate work, push, merge, deploy, provision accounts, or send messages merely because this document describes those future steps. Preserve the human team's chosen execution method and obtain the applicable authorization for external actions.
 
-**Goal:** Two independently instructed agents use live European public evidence to discover a suitable counterparty, negotiate a simulated commercial agreement, complete a Stripe sandbox payment, and notify both demo participants without a human approving individual steps.
+**Goal:** Two independently instructed agents use live European public evidence to discover a suitable counterparty, negotiate a simulated commercial agreement, complete a Stripe sandbox payment, and report the result in both bots' existing chats without a human approving individual steps.
 
 **Architecture:** A public HTTPS backend exposes authenticated JSON tools. Buyer and supplier bots run independently and call those tools; the backend owns company identities, evidence, requests, offers, policy enforcement, agreements, and payment state. Public data discovery is separate from whether a company has a connected demo representative.
 
-**Proposed stack:** TypeScript on Cloudflare Workers with D1, an HTTP API and OpenAPI description, a thin MCP adapter only where the selected clients support it, TED for public procurement data, one web-search provider for supplier discovery, Stripe sandbox, and one transactional email provider. Use the team's existing host instead if its working setup saves time. Choose one host, not several.
+**Proposed stack:** TypeScript on Cloudflare Workers with D1, an HTTP API and OpenAPI description, a thin MCP adapter only where the selected clients support it, TED for public procurement data, one web-search provider for supplier discovery, Stripe sandbox, and result reporting through each bot's existing conversation. No email provider is required. Use the team's existing host instead if its working setup saves time. Choose one host, not several.
 
 **Spec:** Jenya's agreed requirements, reproduced in this document, and the local SalesPatriot challenge deck. The source PDF is not uploaded to this public repo. The repository now contains a TypeScript scaffold; implementation status is recorded in `docs/STATUS.md` and `docs/workstreams/`.
 
@@ -36,7 +36,7 @@ Two questions go to an organizer early: does this simulated agreement count as t
 
 Jenya researches two plausible buyer/supplier cases: one primary and one backup. Each has accessible public evidence and several plausible candidate suppliers. Research guides case selection, not the ranking code. Do not force a supplier by identity or insert its ID into the buyer prompt.
 
-Provision two scoped demo participant credentials through an operator setup step. That step fixes maximum permissions and spending limits before either bot runs; registration cannot expand them. Each bot can register its participant's company context at the service URL. Issue no payment-provider or cloud credentials to bots. Supply demo email addresses belonging to the team.
+Provision two scoped demo participant credentials through an operator setup step. That step fixes maximum permissions and spending limits before either bot runs; registration cannot expand them. Each bot can register its participant's company context at the service URL. Issue no payment-provider or cloud credentials to bots. Connect the two demo bot conversations for in-chat result reporting. No email setup is required.
 
 Example buyer instruction, with exact goods and numbers chosen after inspecting a real case:
 
@@ -58,7 +58,7 @@ The supplier bot must already have an active listener or poll loop. Its human ca
 6. The supplier bot sees the request, submits terms, and negotiates. Both bots operate with separate credentials, prompts, private limits, and execution contexts.
 7. Both accept the exact same offer revision. Agent Marketplace validates both policies and creates one agreement.
 8. Agent Marketplace initiates Stripe sandbox payment. Verified provider status drives the order's payment status.
-9. Agent Marketplace creates a clearly labeled demo invoice/order document and notifies both demo participants. Their bots read the final status and report it in their chats.
+9. Agent Marketplace creates a clearly labeled demo invoice/order document. Both bots read authoritative order/payment state and report the result in their existing chats, including failure/refusal where applicable. There is no separate email delivery step.
 10. A judge changes the budget, quantity, or deadline. Rerun live sourcing; the system must renegotiate or refuse when appropriate.
 
 Target a first end-to-end run within three minutes, including live retrieval. This is an acceptance target, not a measured performance claim. Allow up to five minutes before reporting a bounded failure. Measure each phase during rehearsal.
@@ -108,14 +108,14 @@ The HTTP API is canonical; MCP tools call the same domain functions and do not i
 | Make an offer or counteroffer | `POST /v1/requests/:id/offers` | Immutable offer revision ID |
 | Accept exact revision | `POST /v1/offers/:id/acceptances` | Acceptance and agreement status |
 | Start sandbox settlement | `POST /v1/orders/:id/settle` | Sandbox payment status/reference |
-| Read own order and demo document | `GET /v1/orders/:id` | Terms, payment state, document, notification state |
+| Read own order and demo document | `GET /v1/orders/:id` | Terms, payment state, document |
 | Receive provider payment events | `POST /webhooks/stripe` | Signature-verified, deduplicated update |
 
 Requests contain item specification, quantity and unit, destination, currency, maximum total delivered cost, and delivery deadline. Offers contain the same commercial fields, an expiry, both participant IDs, and an immutable revision ID. Money uses integer minor units. Dates use ISO 8601 with explicit timezone. Evidence values and simulated terms have separate fields.
 
 The supplier's private floor never appears in buyer responses. Each side can only act for its own participant. Before agreement, a counteroffer invalidates stale acceptance paths. The second valid acceptance atomically creates one order for the current offer revision, after which terms are immutable and further offers are rejected. Requests can close once, and capacity cannot be allocated twice.
 
-Use idempotency keys on mutations. Payment and notification jobs use a persistent outbox so retries do not repeat their business effect. There are separate agreement, payment, and notification statuses: a failed email does not undo payment, and an agent's message does not mark a payment successful.
+Use idempotency keys on mutations and a persistent payment outbox so retries do not repeat their business effect. Agreement and payment have separate statuses. Agents consume authorized platform events with persisted cursors and deduplicate chat reports. Failed chat reporting does not undo payment, and an agent's message does not mark a payment successful.
 
 Long work returns an ID and is polled in bounded steps. Do not depend on one long serverless HTTP request or in-memory state to complete the transaction.
 
@@ -137,25 +137,27 @@ Long work returns an ID and is polled in bounded steps. Do not depend on one lon
 
 **Done:** API requests from two scoped clients produce one correctly validated order and one verified sandbox payment, with no UI or secret exposed to an agent.
 
-### Owner B: bot connectivity, independent execution, and notifications
+### Owner B: bot connectivity, independent execution, and in-chat results
 
-**Owns:** client adapters, conditional MCP wrapper, buyer/supplier instructions, active supplier listener, safe notification routing, and the host-computer demo harness.
+**Owns:** client adapters, conditional MCP wrapper, buyer/supplier instructions, active supplier listener, result reporting in each bot's existing conversation, and the host-computer demo harness. This includes making the bots act, not only testing connectivity. A listener checks incoming requests and keeps the supplier agent responding; it is not a supplier-listing UI.
 
-**Proposed files:** `src/agents/*`, `src/mcp/*`, `src/notifications/*`, `scripts/run-demo.ts`, `tests/agents/`, `docs/agent-setup.md`.
+**Proposed files:** `src/agents/*`, `src/mcp/*`, `scripts/run-demo.ts`, `tests/agents/`, `docs/agent-setup.md`.
 
 - [ ] First verify the actual Grokbot and Instinct products and versions: how each authenticates, calls custom HTTP/MCP tools, runs without per-call approval, and receives asynchronous events. Names alone do not establish compatibility.
 - [ ] Connect two distinct participant credentials. Implement only the supported interface; prefer HTTP if it works immediately, add MCP if needed by a chosen client.
 - [ ] Write failing tests that separate buyer and supplier identity, redact private limits, and prevent an untrusted source from changing tools, policies, or payment recipients.
 - [ ] Implement a supplier listener that polls its authorized event cursor every few seconds with backoff, and a buyer runner that advances the sourcing/negotiation flow. Persist cursors and deduplicate responses.
 - [ ] Bound negotiation to three offer revisions or five minutes, whichever comes first. Stop on incompatible policies rather than loop forever.
-- [ ] Implement email notifications to the team's allowlisted demo addresses through one provider. Use order/event IDs for deduplication and include source links, agreed terms, demo document, and sandbox status. External company email addresses must never be used.
-- [ ] Make both bots report final status in their own chats where the verified client API supports it. If proactive chat delivery is unavailable, use the active bot's poll loop and disclose that behavior.
+- [ ] Make the buyer and supplier bots read scoped order/payment updates and report success, no match, refusal, expiry, or payment failure in their existing conversations. Use order/event IDs to deduplicate reports and include the demo document/reference where applicable. Do not build an email service.
+- [ ] Keep the supplier listener active through agreement and payment updates. Verify reporting through the actual bot clients. If proactive chat delivery is unavailable, use the active bot's poll loop and native tool-call response; disclose that behavior.
 - [ ] Run `npm run test:agents` and demonstrate buyer and supplier running in genuinely separate sessions.
 - [ ] Prepare a portable terminal harness for the host computer. If a named client cannot connect, use two independently configured tool-calling agents against the same API and explicitly report that the named-client integration was not achieved.
 
-**Done:** the supplier human remains idle while its running agent receives a request, negotiates, and both demo humans receive accurate completion messages. The host can reproduce this without the developers' private machine state.
+**Done:** the supplier human remains idle while its running agent receives a request, negotiates, and both demo humans receive accurate completion messages in their existing bot chats. The host can reproduce this without the developers' private machine state.
 
 ### Owner C: Jenya with Codex, live sourcing, matching, and acceptance
+
+**Jenya personally:** choose and inspect public sources, define the demo limits, research one primary scenario and one backup, verify the intended supplier is actually supported by live results, coordinate integration, and lead the final rehearsal. Each scenario pairs a real public buyer requirement with a plausible supplier; it is not an imported catalog or a forced match. Codex implements and tests the live API/data processing/ranking code with Jenya. Every owner submits small reviewed PRs; platform owner handles shared wiring and integrated status. Jenya does not wait to merge three giant branches at the end.
 
 **Owns:** case research, real-data connectors, evidence normalization, supplier comparison, live-run proof, and acceptance testing. This is a substantial implementation workstream, not just finding two company names.
 
@@ -167,7 +169,7 @@ Long work returns an ID and is polled in bounded steps. Do not depend on one lon
 - [ ] Implement TED search, supplier discovery, current-run source fetches, evidence extraction, identity normalization, and deterministic ranking.
 - [ ] Implement quote comparison using confirmed complete commercial terms. A public lead with no quote never becomes a fabricated competing offer.
 - [ ] Run `npm run test:sourcing`, then rehearse live retrieval for both cases. A case is accepted only if the results actually support the proposed match.
-- [ ] Run the integrated acceptance cases below and capture the final source timestamps, order ID, payment reference, and notification status. Perform the hosted run only against the authorized demo service and sandbox providers.
+- [ ] Run the integrated acceptance cases below and capture the final source timestamps, order ID, payment reference, and both bots' reported results. Perform the hosted run only against the authorized demo service and sandbox providers.
 
 **Done:** live retrieval independently finds credible candidates, membership changes do not change evidence ranking, and a changed constraint can defeat the prepared supplier. The full run has inspectable evidence rather than a scripted success message.
 
@@ -179,7 +181,7 @@ These are relative work blocks; adjust to the actual code-freeze time. Do not as
 | --- | --- |
 | First 30 minutes | Agree exact contract, ownership, host, case criteria, demo interpretation, and the two clients to test. |
 | Next 60-90 minutes | A supplies the minimal authenticated API; B proves both client connections and supplier polling; C proves live procurement retrieval plus official supplier evidence. |
-| Middle build block | Parallel work on order/payment state, agent negotiation/notifications, and evidence/ranking. Integrate each working vertical piece promptly. |
+| Middle build block | Parallel work on order/payment state, agent negotiation/in-chat reporting, and evidence/ranking. Integrate each working vertical piece promptly. |
 | Last 90 minutes before freeze | Stop adding features. Run success and refusal cases, inspect security/payment behavior, fix proven faults, and rehearse from the host's execution surface. |
 
 Fail early: do not spend hours on Stripe if the clients cannot call tools, or on a matching algorithm if the chosen sources are inaccessible.
@@ -209,26 +211,26 @@ Automated behavior tests use disposable local data and mocked external responses
 | Live sourcing | Current-run network retrieval produces cited requirements and more than one plausible candidate; failures remain visible. | C |
 | Membership independence | Toggle or reorder account registration for identical evidence; shortlist scores and order remain unchanged. | C |
 | Honest unknowns | Absent stock or price stays unknown until a demo supplier offer confirms it. | C |
-| Happy path | Separate agents agree on one revision; one order is sandbox-paid; both receive accurate notifications. | All |
+| Happy path | Separate agents agree on one revision; one order is sandbox-paid; each bot reports accurate results in its existing chat. | All |
 | Budget/deadline refusal | Incompatible limits produce no agreement and no payment. | A, B |
 | Tenant isolation | Buyer credential cannot submit supplier acceptance, view its private floor, or read another tenant's events. | A, B |
 | Stale/replayed/concurrent calls | Old revision, duplicate acceptance, or simultaneous attempts cannot create duplicate orders or oversell capacity. | A |
-| Payment replay/failure | Retry and duplicate webhook do not double-pay or double-notify; a decline never produces a paid message. | A, B |
-| Notification failure | Order/payment remain correct; failed email retries without sending repeated business notifications. | B |
+| Payment replay/failure | Retry and duplicate webhook do not double-pay or repeat the same chat update; a decline never produces a paid message. | A, B |
+| Chat-report failure | Order/payment remain correct; the bot resumes from its event cursor without losing or repeating the result report. | B |
 | Malicious source | Instructions embedded in retrieved text cannot alter spending limits, invoke settlement, leak credentials, or fetch private network endpoints. | A, B, C |
 | Host reproduction | Host computer can access the service and run/show both agent sessions using the agreed demo setup. | B |
 
 Verification commands after integration: `npm run typecheck`, `npm test`, then `npm run test:e2e` for the disposable local integrated scenario. Inspect fresh output in full. Independently verify one hosted order against its sandbox provider status; a bot saying "done" is not proof.
 
-Use HTTP(S)-only, public-destination fetches with private-address and redirect checks, document-size limits, timeouts, and credentials stripped from outbound fetches. Keep email recipients and payment account mapping controlled by the backend. Never log secrets.
+Use HTTP(S)-only, public-destination fetches with private-address and redirect checks, document-size limits, timeouts, and credentials stripped from outbound fetches. Keep payment account mapping controlled by the backend and chat updates scoped to the participant's existing conversation. Never log secrets.
 
 ## 11. Scope ceiling and fallback behavior
 
-MVP: two demo accounts, one live procurement connector, one supplier-search route, one currency, one selected supplier per order, three offer revisions maximum, one Stripe sandbox flow, demo invoice/order document, team-only email notifications, and two separate agent sessions.
+MVP: two demo accounts, one live procurement connector, one supplier-search route, one currency, one selected supplier per order, three offer revisions maximum, one Stripe sandbox flow, demo invoice/order document, result reporting in each bot's existing chat, and two separate agent sessions.
 
-Defer multi-supplier consortiums, split orders, real-money payouts, formal tax invoicing, universal agent compatibility, self-service company verification, broad crawling, vector databases, and a frontend. Deliberate implementation shortcuts must carry a greppable `MVP_LIMIT` comment stating the ceiling and upgrade path.
+Defer email delivery, a separate notification service, multi-supplier consortiums, split orders, real-money payouts, formal tax invoicing, universal agent compatibility, self-service company verification, broad crawling, vector databases, and a frontend. Deliberate implementation shortcuts must carry a greppable `MVP_LIMIT` comment stating the ceiling and upgrade path.
 
-If sources fail, return a sourcing failure. If no connected supplier qualifies, return leads but do not close a deal. If payment fails, preserve the agreement with a failed payment state. If a bot client is unsupported, disclose the replacement client. If email is unavailable, show notification failure rather than pretending delivery. Do not substitute a recording, imported catalog, or cached replay for the live run.
+If sources fail, return a sourcing failure. If no connected supplier qualifies, return leads but do not close a deal. If payment fails, preserve the agreement with a failed payment state. If a bot client is unsupported, disclose the replacement client. If a bot cannot report the final result, expose that reporting failure rather than pretending delivery. Do not substitute a recording, imported catalog, or cached replay for the live run.
 
 ## 12. Source references inspected for this plan
 
@@ -244,4 +246,4 @@ If sources fail, return a sourcing failure. If no connected supplier qualifies, 
 
 Two independently running agents, connected to one public backend, retrieve live evidence, discover a qualifying demo counterparty without an identity exception, negotiate and accept identical permitted terms, create exactly one sandbox-paid order and demo document, and report accurate status to both participants. A changed incompatible requirement produces refusal. The host can observe it live, and the team can explain which facts are public evidence and which terms are simulated.
 
-This document is a target plan. A status/docs HTTP scaffold and local test setup now exist. Authentication, live sourcing, trading, bot integrations, Stripe configuration, email delivery, real cases, and deployment remain unimplemented. Initial TODO tests are acceptance tasks, not passing evidence. See the shared handoff for current integrated status.
+This document is a target plan. A status/docs HTTP scaffold and local test setup now exist. Authentication, live sourcing, trading, bot integrations, Stripe configuration, in-chat result reporting, real cases, and deployment remain unimplemented. Initial TODO tests are acceptance tasks, not passing evidence. See the shared handoff for current integrated status.

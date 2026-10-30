@@ -20,13 +20,15 @@ The agents use separate credentials and contexts. Supplier polls `GET /v1/events
 
 MCP/custom-tool support for the named clients is unverified. Implement one demonstrated transport first.
 
-## Orders, payment, notifications
+## Orders, payment, and bot result reporting
 
 Both sides accept the same current offer. Counteroffers make previous unagreed revisions stale. Once agreed, terms are immutable and one order exists. Platform atomically enforces one close and supplier capacity.
 
 Offer `deliveredTotal` includes tax and delivery; `taxMinor` and `deliveryMinor` are included components, not additional charges. Reject inconsistent totals. Price, stock, and delivery declarations are demo supplier terms, not inferred facts about the real company.
 
-Platform owns sandbox payment, signature-verified provider updates, and demo documents. Agent owner implements `NotificationService.notifyOrder(order)` against a controlled recipient mapping outside agent payloads. The first implementation must coordinate injection and persistent retry/outbox ownership with platform. No claim of seller payout, tax invoicing, physical fulfillment, or profit follows from a sandbox charge.
+Platform owns sandbox payment, signature-verified provider updates, demo documents, and persistent participant-scoped events. Agent owner makes each bot consume those events, read the authorized current order, and report the result in its existing conversation. The supplier listener must continue through agreement and payment updates, not stop after submitting a quote. There is no `NotificationService`, email provider, or platform-wide notification status in the MVP.
+
+Bot messages must distinguish agreed-and-sandbox-paid, no match, negotiation refused/expired, payment failed, and payment requiring further action. Failed or delayed chat reporting does not alter an order's agreement/payment state. Persist consumer cursors and deduplicate event reports; only report payment success after reading provider-confirmed platform status. A bot's existing tool-call result may supply the in-chat response when proactive chat APIs are unavailable. Actual client behavior must be verified; a plain HTTP/MCP connection alone does not guarantee proactive messages. No claim of seller payout, tax invoicing, physical fulfillment, or profit follows from a sandbox charge.
 
 ## Independent tests and shared fixtures
 

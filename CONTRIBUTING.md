@@ -27,10 +27,12 @@ Ask another teammate to review, fix proven findings, then merge within the team'
 1. Platform: participant identity and request creation. Agents: connect and authenticate two clients. Sourcing: prove live retrieval independently.
 2. Connect real sourcing to the platform through `SourcingService` and `MatchingService`.
 3. Connect the agents to requests/events/offers; prove negotiation and refusal with simulated terms.
-4. Add Stripe sandbox settlement and demo documents, then accurate team-only notifications.
+4. Add Stripe sandbox settlement and demo documents, then accurate results inside both bots' existing chats. No email service is required.
 5. Run a real hosted rehearsal with separate clients and current public evidence. Repeat with incompatible limits.
 
 The independent workstreams can run in parallel, but the final product must be integrated incrementally. No amount of isolated testing guarantees that a final merge works.
+
+Jenya coordinates the cross-workstream demo and leads final acceptance. Each owner submits small PRs with independent verification; the platform owner handles shared wiring/contracts and the integrated status document. Merge reviewed increments throughout the build rather than assigning Jenya three finished branches to combine at the end.
 
 ## Shared context upkeep
 

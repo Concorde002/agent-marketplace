@@ -120,7 +120,6 @@ export interface Order {
   acceptedOffer: Offer;
   agreementStatus: "agreed";
   paymentStatus: "not_started" | "pending" | "succeeded" | "failed" | "requires_action";
-  notificationStatus: "not_started" | "pending" | "sent" | "failed";
   sandboxPaymentId?: string;
   demoInvoice?: { id: string; text: string; demo: true };
   demo: true;
@@ -161,8 +160,4 @@ export interface PlatformService {
   settleOrder(actor: ActorContext, orderId: OrderId): Promise<Order>;
   getOrder(actor: ActorContext, orderId: OrderId): Promise<Order>;
   listEvents(actor: ActorContext, after?: string): Promise<EventPage>;
-}
-
-export interface NotificationService {
-  notifyOrder(order: Order): Promise<{ status: "sent" | "failed" }>;
 }

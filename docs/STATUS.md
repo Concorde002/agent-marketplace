@@ -8,7 +8,7 @@ Owner: platform integrator. Other workstreams update their own status files and 
 - Public repository: https://github.com/yauhenifutryn/agent-marketplace
 - TypeScript scaffold, Web Fetch handler, typed draft boundaries, team brief, agent instructions, and CI configuration exist.
 - Implemented HTTP behavior: scaffold health, agent setup description, and draft OpenAPI output. Business routes return 501.
-- No deployed service, verified bot integration, authentication, live connector, ranking, order lifecycle, Stripe setup, or notification delivery yet.
+- No deployed service, verified bot integration, authentication, live connector, ranking, order lifecycle, Stripe setup, or in-chat completion reporting yet.
 - Initial agent, sourcing, and integration tests are TODO tasks. Green scaffold CI does not establish those features.
 
 ## Verification at scaffold publication
@@ -24,6 +24,15 @@ Owner: platform integrator. Other workstreams update their own status files and 
 3. Agent owner proves two actual clients can authenticate/call tools and that the supplier loop stays active.
 4. Jenya + Codex implement live source retrieval and inspect two plausible buyer/supplier cases.
 5. Integrate these first pieces before extending negotiation and payment.
+
+## Clarified responsibilities and result reporting
+
+- Teammate 1 builds the hosted backend, accounts, order rules, Stripe sandbox, demo documents, and authoritative status/events.
+- Teammate 2 connects the actual bots, keeps the supplier listener running, enables autonomous offer exchange, and makes both bots report the result in their existing chats. This includes implementation and verification, not just checking that a URL opens.
+- Jenya + Codex implement live-data pulling, extraction, and matching; Jenya personally selects and inspects a primary real-data scenario plus a backup, coordinates integration, and leads end-to-end rehearsal.
+- Prepared cases do not preload or force supplier matches. Sources must be retrieved during the run, and incompatible limits must produce refusal.
+- Email and a separate notification service are outside the MVP. Bot result reporting is required; failure messages matter as much as success messages.
+- Workstream owners test and submit small PRs throughout the build. Platform owner controls shared wiring/contracts/status; Jenya leads overall acceptance.
 
 ## Unconfirmed
 
