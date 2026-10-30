@@ -37,6 +37,18 @@ const state = {
   timer: 0,
   backoff: POLL_MS,
   inflight: false,
+  // Live log stream (/observer/ws). Execution trace only; never authoritative order state.
+  stream: "",
+  ws: null,
+  wsTimer: 0,
+  wsBackoff: 1000,
+  wsHello: false,
+  wsFailures: 0,
+  instanceId: "",
+  lastSeq: 0,
+  logs: [],
+  logIds: new Set(),
+  liveTimer: 0,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -94,7 +106,7 @@ function opLabel(op) { return op; }
 // ---------- connection ----------
 function readHash() {
   const params = new URLSearchParams(location.hash.slice(1));
-  return { api: params.get("api") ?? "", key: params.get("key") ?? "", run: params.get("run") ?? "" };
+  return { api: params.get("api") ?? "", key: params.get("key") ?? "", stream: params.get("stream") ?? "", run: params.get("run") ?? "" };
 }
 function writeHash() {
   // The key is never written back: it stays in memory only.
@@ -136,7 +148,9 @@ function setConn(kind, text) {
 
 function showConnect(message) {
   stopPolling();
+  closeStream();
   state.key = "";
+  state.stream = "";
   $("workspace").hidden = true;
   $("pause").hidden = true;
   $("connect").hidden = false;
@@ -148,6 +162,27 @@ function showConnect(message) {
 }
 
 async function connect() {
+  if (state.stream) openStream();
+  if (!state.key) {
+    // Stream-only: live activity without run details.
+    $("connect").hidden = true;
+    $("workspace").hidden = false;
+    $("pause").hidden = true;
+    document.querySelector(".runbar").hidden = true;
+    $("empty").hidden = true;
+    $("run").hidden = false;
+    $("run").classList.add("stream-only");
+    $("feed-panel").hidden = false;
+    setConn("idle", "Run details off");
+    const note = $("feed-note");
+    note.hidden = false;
+    note.textContent = "Run details, order and payment status need an observer key (obs_…). Only the live activity log is shown.";
+    renderFeed();
+    return;
+  }
+  $("run").classList.remove("stream-only");
+  document.querySelector(".runbar").hidden = false;
+  $("feed-note").hidden = true;
   setConn("slow", "Connecting…");
   try {
     const list = await get("runs");
@@ -314,6 +349,7 @@ function renderMissing() {
 function render() {
   const view = state.view;
   $("run").hidden = !view;
+  $("feed-panel").hidden = !state.stream;
   if (!view) return;
   const env = $("env-badge");
   env.hidden = false;
@@ -340,6 +376,7 @@ function render() {
   renderOutcome(view);
   renderEvidence(view);
   renderRanking(view);
+  renderFeed();
 }
 
 function renderElapsed() {
@@ -583,7 +620,164 @@ function renderRanking(view) {
   set("ranking-body", table, lookup);
 }
 
+// ---------- live log stream ----------
+function streamUrl() {
+  const url = new URL(state.api);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.pathname = "/observer/ws";
+  url.search = "";
+  url.hash = "";
+  return url.href;
+}
+
+function setStream(kind, text) {
+  $("stream-status").dataset.state = kind;
+  set("stream-text", text);
+}
+
+function openStream() {
+  closeStream();
+  if (!state.stream || !state.api) return;
+  $("feed-panel").hidden = false;
+  let ws;
+  try {
+    // The token travels as a subprotocol: browsers cannot set headers on a WebSocket, and URLs get logged.
+    ws = new WebSocket(streamUrl(), ["marketplace-observer.v1", `bearer.${state.stream}`]);
+  } catch {
+    setStream("error", "Live stream could not start");
+    return;
+  }
+  state.ws = ws;
+  state.wsHello = false;
+  setStream("slow", "Connecting to live stream…");
+  ws.onmessage = (event) => {
+    let message;
+    try { message = JSON.parse(event.data); } catch { return; }
+    if (message && message.v === 1) handleStreamMessage(message);
+  };
+  ws.onerror = () => {};
+  ws.onclose = () => {
+    if (state.ws !== ws) return;
+    state.ws = null;
+    if (!state.wsHello) state.wsFailures += 1;
+    scheduleStream();
+  };
+}
+
+function closeStream() {
+  clearTimeout(state.wsTimer);
+  const ws = state.ws;
+  state.ws = null;
+  if (ws) { ws.onclose = null; ws.close(); }
+}
+
+function scheduleStream() {
+  if (!state.stream) return;
+  setStream("error", state.wsFailures >= 3
+    ? "Live stream refused or unreachable · check the stream token · retrying"
+    : `Live stream disconnected · retrying in ${Math.round(state.wsBackoff / 1000)}s`);
+  clearTimeout(state.wsTimer);
+  state.wsTimer = setTimeout(openStream, state.wsBackoff);
+  state.wsBackoff = Math.min(state.wsBackoff * 2, MAX_BACKOFF_MS);
+}
+
+function handleStreamMessage(message) {
+  if (message.type === "hello") {
+    state.wsHello = true;
+    state.wsFailures = 0;
+    state.wsBackoff = 1000;
+    if (state.instanceId && state.instanceId !== message.instanceId) {
+      addMarker(`Now connected to a different server instance (${short(message.instanceId)}). Its history starts at its own start-up.`);
+    }
+    state.instanceId = message.instanceId;
+    const backlog = Array.isArray(message.backlog) ? message.backlog : [];
+    for (const log of backlog) addLog(log, true);
+    state.lastSeq = backlog.at(-1)?.seq ?? 0;
+    setStream("live", `Live · server ${short(message.instanceId)}`);
+    renderFeed();
+    liveRefresh();
+    return;
+  }
+  if (message.type === "dropped") {
+    addMarker(`${message.count} log entries were skipped because this page fell behind. Run details are re-read from the backend.`);
+    liveRefresh();
+    renderFeed();
+    return;
+  }
+  if (message.type === "log") {
+    if (state.lastSeq && message.seq > state.lastSeq + 1) addMarker(`${message.seq - state.lastSeq - 1} log entries missed (sequence gap).`);
+    if (message.seq > state.lastSeq) state.lastSeq = message.seq;
+    addLog(message, false);
+    if (message.level !== "debug") liveRefresh();
+    renderFeed();
+  }
+}
+
+function addLog(log, history) {
+  if (!log || typeof log.id !== "string" || state.logIds.has(log.id)) return;
+  state.logIds.add(log.id);
+  state.logs.push({ ...log, history });
+  while (state.logs.length > 600) {
+    const old = state.logs.shift();
+    if (old && old.id) state.logIds.delete(old.id);
+  }
+}
+
+function addMarker(text) {
+  state.logs.push({ marker: true, text, at: new Date().toISOString(), id: `marker-${Date.now()}-${state.logs.length}` });
+}
+
+/** A state-changing call happened: re-read authoritative run state now instead of waiting for the next poll. */
+function liveRefresh() {
+  if (!state.key || state.paused) return;
+  clearTimeout(state.liveTimer);
+  state.liveTimer = setTimeout(() => { if (!state.inflight) void tick(); }, 400);
+}
+
+function belongsToRun(log, view) {
+  const subject = log.subject ?? {};
+  return subject.requestId === view.run.id
+    || (view.discovery && subject.discoveryId === view.discovery.id)
+    || view.offers.some((offer) => offer.id === subject.offerId)
+    || (view.order && subject.orderId === view.order.id)
+    || (view.order?.payment?.providerPaymentId && typeof log.message === "string" && log.message.includes(view.order.payment.providerPaymentId));
+}
+
+function feedVisible(log) {
+  if (log.marker) return true;
+  if (typeof log.operation === "string" && log.operation.startsWith("observer_")) return false;
+  if (!$("feed-reads").checked && (log.level === "debug" || log.operation === "mcp")) return false;
+  if ($("feed-run-only").checked && state.view) return belongsToRun(log, state.view);
+  return true;
+}
+
+function renderFeed() {
+  if (!state.stream) return;
+  $("feed-run-only").disabled = !state.view;
+  const rows = state.logs.filter(feedVisible).sort((a, b) => Date.parse(b.at) - Date.parse(a.at)).slice(0, 200);
+  const list = $("feed");
+  if (rows.length === 0) {
+    list.replaceChildren(h("li", { class: "feed-empty" }, state.wsHello
+      ? "Nothing yet. Entries appear as the agents call the backend."
+      : "Waiting for the live stream."));
+    return;
+  }
+  list.replaceChildren(...rows.map((log) => {
+    if (log.marker) return h("li", { class: "marker" }, `${time(log.at)} · ${log.text}`);
+    const who = log.actor?.role ?? (log.source === "stripe" ? "stripe" : "—");
+    const whoTone = who === "buyer" ? "info" : who === "supplier" ? "outline" : "";
+    const result = log.outcome === "ok" ? null : badge(log.code ?? log.outcome, log.outcome === "refused" ? "wait" : "bad");
+    return h("li", { class: log.history ? "history" : "" },
+      h("span", { class: "f-time" }, time(log.at)),
+      h("span", { class: "client-row" }, badge(who, whoTone), log.history ? badge("earlier", "outline") : null),
+      h("span", { class: "f-msg" }, log.message ?? log.operation ?? ""),
+      h("span", { class: "client-row" }, badge((log.source ?? "").toUpperCase(), "outline"), result));
+  }));
+}
+
 // ---------- wiring ----------
+$("feed-run-only").addEventListener("change", renderFeed);
+$("feed-reads").addEventListener("change", renderFeed);
 $("connect-form").addEventListener("submit", (event) => {
   event.preventDefault();
   try {
@@ -593,7 +787,10 @@ $("connect-form").addEventListener("submit", (event) => {
     return;
   }
   state.key = $("key-input").value.trim();
+  state.stream = $("stream-input").value.trim();
   $("key-input").value = "";
+  $("stream-input").value = "";
+  if (!state.key && !state.stream) { showConnect("Enter an observer key, a stream token, or both."); return; }
   writeHash();
   void connect();
 });
@@ -617,9 +814,10 @@ setInterval(() => { if (state.view && !state.paused) renderElapsed(); }, 1000);
 // Pasting a new observer link into an open tab changes only the hash; treat it as a new connection.
 window.addEventListener("hashchange", () => {
   const next = readHash();
-  if (!next.key) return;
+  if (!next.key && !next.stream) return;
   try { state.api = normalizeApi(next.api || state.api); } catch { showConnect("Use an https address."); return; }
   state.key = next.key.trim();
+  state.stream = next.stream.trim();
   state.runId = next.run;
   state.newestSeenId = "";
   writeHash();
@@ -631,7 +829,8 @@ window.addEventListener("hashchange", () => {
   state.runId = fromLink.run;
   try { state.api = fromLink.api ? normalizeApi(fromLink.api) : ""; } catch { state.api = ""; }
   state.key = fromLink.key.trim();
-  writeHash(); // strips the key from the address bar and history entry
-  if (state.api && state.key) void connect();
-  else showConnect(fromLink.api && !fromLink.key ? "Reopen the full observer link from the operator: the key is not kept after a reload." : undefined);
+  state.stream = fromLink.stream.trim();
+  writeHash(); // strips both secrets from the address bar and history entry
+  if (state.api && (state.key || state.stream)) void connect();
+  else showConnect(fromLink.api ? "Reopen the full observer link from the operator: secrets are not kept after a reload." : undefined);
 })();

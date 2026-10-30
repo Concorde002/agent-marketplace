@@ -10,10 +10,12 @@
  * OBSERVER_EXTRA_ORIGINS adds browser origins (e.g. the deployed Pages site) allowed to read the fixture API.
  * Everything it shows is labelled "local-fixture": it is not hosted or named-client evidence.
  */
+import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import http from "node:http";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ObserverBus } from "../../../src/platform/observer.js";
 import { announceMcpClient, createObserverPlatform, driveRun } from "./observer-platform.js";
 
 const TYPES: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
@@ -24,7 +26,10 @@ async function main(): Promise<void> {
   const dashboardPort = Number(process.env.DASHBOARD_PORT ?? 8792);
   const dashboardOrigin = `http://127.0.0.1:${dashboardPort}`;
   const extraOrigins = (process.env.OBSERVER_EXTRA_ORIGINS ?? "").split(",").map((o) => o.trim()).filter(Boolean);
-  const platform = await createObserverPlatform({ allowedOrigins: [dashboardOrigin, `http://localhost:${dashboardPort}`, ...extraOrigins], providerDelayMs: 300 });
+  // The fixture serves the backend's real /observer/ws stream with a disposable token.
+  const streamToken = randomBytes(24).toString("base64url");
+  const platform = await createObserverPlatform({ allowedOrigins: [dashboardOrigin, `http://localhost:${dashboardPort}`, ...extraOrigins], providerDelayMs: 300,
+    observer: new ObserverBus(), streamToken });
 
   const root = fileURLToPath(new URL("../../../../dashboard/", import.meta.url));
   const server = http.createServer(async (req, res) => {
@@ -40,7 +45,7 @@ async function main(): Promise<void> {
   });
   await new Promise<void>((resolve) => server.listen(dashboardPort, "127.0.0.1", resolve));
 
-  const link = `${dashboardOrigin}/#api=${encodeURIComponent(platform.url)}&key=${encodeURIComponent(platform.tokens.observer)}`;
+  const link = `${dashboardOrigin}/#api=${encodeURIComponent(platform.url)}&key=${encodeURIComponent(platform.tokens.observer)}&stream=${encodeURIComponent(streamToken)}`;
   console.log(`Fixture API:   ${platform.url} (local-fixture, stubbed sources and payment)`);
   console.log(`Observer link: ${link}`);
 

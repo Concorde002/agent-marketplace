@@ -5,6 +5,7 @@ import { PGlite } from "@electric-sql/pglite";
 import { PlatformClient } from "../../../src/agents/client.js";
 import type { Database } from "../../../src/platform/database.js";
 import type { ObserverBus } from "../../../src/platform/observer.js";
+import { attachObserverSocket } from "../../../src/platform/observer-socket.js";
 import { createPlatformHttp } from "../../../src/platform/http.js";
 import { Marketplace } from "../../../src/platform/marketplace.js";
 import { PostgresPaymentStore } from "../../../src/payments/postgres-store.js";
@@ -45,6 +46,8 @@ export interface ObserverPlatformOptions {
   wrapDb?: (db: Database) => Database;
   /** Attach the /observer/ws log stream bus. */
   observer?: ObserverBus;
+  /** With `observer`, also serve /observer/ws on the fixture server, requiring this token. */
+  streamToken?: string;
 }
 
 export interface ObserverPlatform {
@@ -136,6 +139,7 @@ export async function createObserverPlatform(options: ObserverPlatformOptions = 
     res.writeHead(response.status, Object.fromEntries(response.headers));
     res.end(Buffer.from(await response.arrayBuffer()));
   });
+  const stream = options.observer && options.streamToken ? attachObserverSocket(server, options.observer, { token: options.streamToken }) : undefined;
   await new Promise<void>((resolve) => server.listen(Number(process.env.OBSERVER_FIXTURE_PORT ?? 0), "127.0.0.1", resolve));
   const port = (server.address() as { port: number }).port;
   return {
@@ -144,7 +148,7 @@ export async function createObserverPlatform(options: ObserverPlatformOptions = 
     tokens,
     observerSessionId: session.id,
     setPayment: (scenario) => { provider.scenario = scenario; },
-    close: async () => { await new Promise<void>((resolve) => server.close(() => resolve())); await db.close(); },
+    close: async () => { await stream?.close(); await new Promise<void>((resolve) => server.close(() => resolve())); await db.close(); },
   };
 }
 
