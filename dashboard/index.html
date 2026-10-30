@@ -22,25 +22,13 @@
     </div>
     <div class="topbar-right">
       <span id="env-badge" class="badge" hidden></span>
-      <span id="conn" class="conn" data-state="idle"><span class="conn-dot"></span><span id="conn-text">Not connected</span></span>
+      <span id="conn" class="conn" data-state="idle"><span class="conn-dot"></span><span id="conn-text">Connecting…</span></span>
       <button id="pause" class="pill pill-ghost" type="button" hidden>Pause</button>
     </div>
   </header>
 
   <main id="main">
-    <section id="connect" class="panel connect" hidden>
-      <h1 class="display">Watch a live run</h1>
-      <p class="lede">Open the observer link the operator sent you, or paste its parts here. Both secrets are read-only, stay in this tab's memory and are removed from the address bar. Either one is enough to start.</p>
-      <form id="connect-form" class="connect-form" autocomplete="off">
-        <label>API address<input id="api-input" name="api" type="url" placeholder="https://your-marketplace-host" required spellcheck="false"></label>
-        <label>Observer key (run details)<input id="key-input" name="key" type="password" placeholder="obs_…" spellcheck="false"></label>
-        <label>Stream token (live activity)<input id="stream-input" name="stream" type="password" placeholder="Read-only stream token" spellcheck="false"></label>
-        <button class="pill" type="submit">Connect</button>
-      </form>
-      <p id="connect-error" class="error-text" role="alert" hidden></p>
-    </section>
-
-    <section id="workspace" hidden>
+        <section id="workspace" hidden>
       <div class="runbar">
         <label class="run-select">
           <span class="label-sm">Run</span>
@@ -55,8 +43,8 @@
 
       <div id="stale" class="notice notice-warn" hidden role="status"></div>
       <div id="empty" class="panel empty" hidden>
-        <h2 class="h2">No runs yet</h2>
-        <p class="muted">Start a request from the buyer's bot. This page never starts or retries a run.</p>
+        <h2 class="h2">Waiting for a demo run</h2>
+        <p class="muted">A run appears here as soon as the buyer's bot starts one. This page never starts or retries a run.</p>
       </div>
 
       <div id="run" hidden>
@@ -81,19 +69,7 @@
 
         <section class="panel outcome" id="outcome" aria-label="Quote, agreement and payment"></section>
 
-        <section class="panel feed" id="feed-panel" aria-label="Live activity" hidden>
-          <div class="feed-head">
-            <h2 class="h2">Live activity</h2>
-            <span id="stream-status" class="conn" data-state="idle"><span class="conn-dot"></span><span id="stream-text">Not connected</span></span>
-            <div class="feed-controls">
-              <label><input type="checkbox" id="feed-run-only" checked> This run only</label>
-              <label><input type="checkbox" id="feed-reads"> Show reads and polls</label>
-            </div>
-          </div>
-          <p class="caveat">The backend's execution log, newest first: what each agent called and what the platform answered. Results above come from the backend's records, not from this log.</p>
-          <p id="feed-note" class="notice notice-warn" hidden></p>
-          <ol id="feed" class="feed-list" aria-live="polite"></ol>
-        </section>
+        
 
         <section class="panel" aria-label="Public source evidence">
           <details id="evidence" class="disclosure">

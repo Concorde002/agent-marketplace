@@ -1,7 +1,9 @@
 // Read-only observer. Everything shown comes from the observer API; nothing is simulated, cached
 // as success, or advanced by a timer. The observer key lives only in this tab's memory.
 
-const POLL_MS = 3000;
+// Fixed public demo backend: read-only, no credentials anywhere in this page.
+const API = "https://agent-marketplace-282760894344.europe-west1.run.app";
+const POLL_MS = 2500;
 const MAX_BACKOFF_MS = 15000;
 const SLOW_MS = 5000;
 
@@ -104,21 +106,8 @@ function short(id) { return id ? `${String(id).slice(0, 8)}…` : "—"; }
 function opLabel(op) { return op; }
 
 // ---------- connection ----------
-function readHash() {
-  const params = new URLSearchParams(location.hash.slice(1));
-  return { api: params.get("api") ?? "", key: params.get("key") ?? "", stream: params.get("stream") ?? "", run: params.get("run") ?? "" };
-}
 function writeHash() {
-  // The key is never written back: it stays in memory only.
-  const params = new URLSearchParams();
-  if (state.api) params.set("api", state.api);
-  if (state.runId) params.set("run", state.runId);
-  history.replaceState(null, "", `${location.pathname}${location.search}#${params}`);
-}
-function normalizeApi(value) {
-  const url = new URL(value.trim());
-  if (url.protocol !== "https:" && !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) throw new Error("Use an https address.");
-  return url.origin;
+  history.replaceState(null, "", `${location.pathname}${location.search}${state.runId ? `#run=${encodeURIComponent(state.runId)}` : ""}`);
 }
 
 class ApiError extends Error {
@@ -129,7 +118,7 @@ async function get(path) {
   const started = Date.now();
   const slow = setTimeout(() => setConn("slow", "Waiting for the API…"), SLOW_MS);
   try {
-    const response = await fetch(`${state.api}/v1/observer/${path}`, { headers: { authorization: `Bearer ${state.key}` }, cache: "no-store" });
+    const response = await fetch(`${API}/v1/demo-observer/${path}`, { cache: "no-store" });
     let body = null;
     try { body = await response.json(); } catch { body = null; }
     if (!response.ok) throw new ApiError(response.status, body && body.code);
@@ -146,81 +135,18 @@ function setConn(kind, text) {
   set("conn-text", text);
 }
 
-function showConnect(message) {
-  stopPolling();
-  closeStream();
-  state.key = "";
-  state.stream = "";
-  $("workspace").hidden = true;
-  $("pause").hidden = true;
-  $("connect").hidden = false;
-  $("api-input").value = state.api;
-  const error = $("connect-error");
-  error.hidden = !message;
-  error.textContent = message ?? "";
-  setConn("idle", "Not connected");
-}
-
-async function connect() {
-  if (state.stream) openStream();
-  if (!state.key) {
-    // Stream-only: live activity without run details.
-    $("connect").hidden = true;
-    $("workspace").hidden = false;
-    $("pause").hidden = true;
-    document.querySelector(".runbar").hidden = true;
-    $("empty").hidden = true;
-    $("run").hidden = false;
-    $("run").classList.add("stream-only");
-    $("feed-panel").hidden = false;
-    setConn("idle", "Run details off");
-    const note = $("feed-note");
-    note.hidden = false;
-    note.textContent = "Run details, order and payment status need an observer key (obs_…). Only the live activity log is shown.";
-    renderFeed();
-    return;
-  }
-  $("run").classList.remove("stream-only");
-  document.querySelector(".runbar").hidden = false;
-  $("feed-note").hidden = true;
-  setConn("slow", "Connecting…");
-  try {
-    const list = await get("runs");
-    $("connect").hidden = true;
-    $("workspace").hidden = false;
-    $("pause").hidden = false;
-    applyRuns(list);
-    if (!state.runId || !state.runs.some((r) => r.id === state.runId)) {
-      // A run named in the link is kept even if it is older than the list window.
-      if (!state.runId) state.runId = state.runs[0]?.id ?? "";
-    }
-    state.newestSeenId = state.runs[0]?.id ?? "";
-    writeHash();
-    await refresh();
-    schedule(POLL_MS);
-  } catch (error) {
-    handleFailure(error, true);
-  }
-}
-
-function handleFailure(error, initial = false) {
-  if (error instanceof ApiError && error.status === 401) {
-    const expired = error.code === "OBSERVER_SESSION_EXPIRED";
-    showConnect(expired ? "This observer key has expired. Ask the operator for a new observer link." : "This observer key was not accepted. Ask the operator for a new observer link.");
-    return;
-  }
-  if (initial) {
-    showConnect(error instanceof ApiError ? `The API answered ${error.status} (${error.code ?? "error"}).` : "The API could not be reached. Check the address and that the observer API is deployed.");
-    return;
-  }
+function handleFailure(error) {
   if (!state.failingSince) state.failingSince = Date.now();
-  setConn("error", "Disconnected");
+  const unavailable = error instanceof ApiError;
+  setConn("error", unavailable ? "Demo observer unavailable" : "Disconnected");
+  const since = new Date(state.failingSince).toLocaleTimeString();
+  const shown = state.lastOkAt ? ` Showing data received at ${new Date(state.lastOkAt).toLocaleTimeString()}; it is not live.` : "";
   const stale = $("stale");
   stale.hidden = false;
   stale.className = "notice notice-bad";
-  stale.textContent = state.lastOkAt
-    ? `Disconnected since ${new Date(state.failingSince).toLocaleTimeString()}. Showing data received at ${new Date(state.lastOkAt).toLocaleTimeString()}; it is not live until the connection returns.`
-    : "Disconnected. No data has been received yet.";
+  stale.textContent = unavailable
+    ? `The backend's demo observer is not available (HTTP ${error.status}) since ${since}. Retrying.${shown}`
+    : `Cannot reach the backend since ${since}. Retrying.${shown}`;
   state.backoff = Math.min(state.backoff * 2, MAX_BACKOFF_MS);
   schedule(state.backoff);
 }
@@ -228,7 +154,7 @@ function handleFailure(error, initial = false) {
 // ---------- polling ----------
 function schedule(ms) {
   clearTimeout(state.timer);
-  if (state.paused || !state.key) return;
+  if (state.paused) return;
   state.timer = setTimeout(tick, ms);
 }
 function stopPolling() { clearTimeout(state.timer); state.timer = 0; }
@@ -239,6 +165,15 @@ async function tick() {
   try {
     const list = await get("runs");
     applyRuns(list);
+    if (!state.runId && state.runs[0]) {
+      // First run to appear while nothing is selected; later runs only raise the "new run" banner.
+      state.runId = state.runs[0].id;
+      state.newestSeenId = state.runId;
+      writeHash();
+      renderRunSelect();
+    } else if (!state.newestSeenId && state.runs[0]) {
+      state.newestSeenId = state.runs[0].id;
+    }
     await refresh();
     state.backoff = POLL_MS;
     schedule(POLL_MS);
@@ -319,6 +254,7 @@ function renderRunSelect() {
     options.push(h("option", { value: state.runId, selected: true }, `Selected run ${short(state.runId)} (outside the recent list)`));
   }
   select.replaceChildren(...options);
+  document.querySelector(".runbar").hidden = options.length === 0;
   select.disabled = options.length === 0;
   $("empty").hidden = state.runs.length > 0 || Boolean(state.runId);
   const run = state.runs.find((r) => r.id === state.runId);
@@ -349,7 +285,6 @@ function renderMissing() {
 function render() {
   const view = state.view;
   $("run").hidden = !view;
-  $("feed-panel").hidden = !state.stream;
   if (!view) return;
   const env = $("env-badge");
   env.hidden = false;
@@ -376,7 +311,6 @@ function render() {
   renderOutcome(view);
   renderEvidence(view);
   renderRanking(view);
-  renderFeed();
 }
 
 function renderElapsed() {
@@ -620,180 +554,7 @@ function renderRanking(view) {
   set("ranking-body", table, lookup);
 }
 
-// ---------- live log stream ----------
-function streamUrl() {
-  const url = new URL(state.api);
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  url.pathname = "/observer/ws";
-  url.search = "";
-  url.hash = "";
-  return url.href;
-}
-
-function setStream(kind, text) {
-  $("stream-status").dataset.state = kind;
-  set("stream-text", text);
-}
-
-function openStream() {
-  closeStream();
-  if (!state.stream || !state.api) return;
-  $("feed-panel").hidden = false;
-  let ws;
-  try {
-    // The token travels as a subprotocol: browsers cannot set headers on a WebSocket, and URLs get logged.
-    ws = new WebSocket(streamUrl(), ["marketplace-observer.v1", `bearer.${state.stream}`]);
-  } catch {
-    setStream("error", "Live stream could not start");
-    return;
-  }
-  state.ws = ws;
-  state.wsHello = false;
-  setStream("slow", "Connecting to live stream…");
-  ws.onmessage = (event) => {
-    let message;
-    try { message = JSON.parse(event.data); } catch { return; }
-    if (message && message.v === 1) handleStreamMessage(message);
-  };
-  ws.onerror = () => {};
-  ws.onclose = () => {
-    if (state.ws !== ws) return;
-    state.ws = null;
-    if (!state.wsHello) state.wsFailures += 1;
-    scheduleStream();
-  };
-}
-
-function closeStream() {
-  clearTimeout(state.wsTimer);
-  const ws = state.ws;
-  state.ws = null;
-  if (ws) { ws.onclose = null; ws.close(); }
-}
-
-function scheduleStream() {
-  if (!state.stream) return;
-  setStream("error", state.wsFailures >= 3
-    ? "Live stream refused or unreachable · check the stream token · retrying"
-    : `Live stream disconnected · retrying in ${Math.round(state.wsBackoff / 1000)}s`);
-  clearTimeout(state.wsTimer);
-  state.wsTimer = setTimeout(openStream, state.wsBackoff);
-  state.wsBackoff = Math.min(state.wsBackoff * 2, MAX_BACKOFF_MS);
-}
-
-function handleStreamMessage(message) {
-  if (message.type === "hello") {
-    state.wsHello = true;
-    state.wsFailures = 0;
-    state.wsBackoff = 1000;
-    if (state.instanceId && state.instanceId !== message.instanceId) {
-      addMarker(`Now connected to a different server instance (${short(message.instanceId)}). Its history starts at its own start-up.`);
-    }
-    state.instanceId = message.instanceId;
-    const backlog = Array.isArray(message.backlog) ? message.backlog : [];
-    for (const log of backlog) addLog(log, true);
-    state.lastSeq = backlog.at(-1)?.seq ?? 0;
-    setStream("live", `Live · server ${short(message.instanceId)}`);
-    renderFeed();
-    liveRefresh();
-    return;
-  }
-  if (message.type === "dropped") {
-    addMarker(`${message.count} log entries were skipped because this page fell behind. Run details are re-read from the backend.`);
-    liveRefresh();
-    renderFeed();
-    return;
-  }
-  if (message.type === "log") {
-    if (state.lastSeq && message.seq > state.lastSeq + 1) addMarker(`${message.seq - state.lastSeq - 1} log entries missed (sequence gap).`);
-    if (message.seq > state.lastSeq) state.lastSeq = message.seq;
-    addLog(message, false);
-    if (message.level !== "debug") liveRefresh();
-    renderFeed();
-  }
-}
-
-function addLog(log, history) {
-  if (!log || typeof log.id !== "string" || state.logIds.has(log.id)) return;
-  state.logIds.add(log.id);
-  state.logs.push({ ...log, history });
-  while (state.logs.length > 600) {
-    const old = state.logs.shift();
-    if (old && old.id) state.logIds.delete(old.id);
-  }
-}
-
-function addMarker(text) {
-  state.logs.push({ marker: true, text, at: new Date().toISOString(), id: `marker-${Date.now()}-${state.logs.length}` });
-}
-
-/** A state-changing call happened: re-read authoritative run state now instead of waiting for the next poll. */
-function liveRefresh() {
-  if (!state.key || state.paused) return;
-  clearTimeout(state.liveTimer);
-  state.liveTimer = setTimeout(() => { if (!state.inflight) void tick(); }, 400);
-}
-
-function belongsToRun(log, view) {
-  const subject = log.subject ?? {};
-  return subject.requestId === view.run.id
-    || (view.discovery && subject.discoveryId === view.discovery.id)
-    || view.offers.some((offer) => offer.id === subject.offerId)
-    || (view.order && subject.orderId === view.order.id)
-    || (view.order?.payment?.providerPaymentId && typeof log.message === "string" && log.message.includes(view.order.payment.providerPaymentId));
-}
-
-function feedVisible(log) {
-  if (log.marker) return true;
-  if (typeof log.operation === "string" && log.operation.startsWith("observer_")) return false;
-  if (!$("feed-reads").checked && (log.level === "debug" || log.operation === "mcp")) return false;
-  if ($("feed-run-only").checked && state.view) return belongsToRun(log, state.view);
-  return true;
-}
-
-function renderFeed() {
-  if (!state.stream) return;
-  $("feed-run-only").disabled = !state.view;
-  const rows = state.logs.filter(feedVisible).sort((a, b) => Date.parse(b.at) - Date.parse(a.at)).slice(0, 200);
-  const list = $("feed");
-  if (rows.length === 0) {
-    list.replaceChildren(h("li", { class: "feed-empty" }, state.wsHello
-      ? "Nothing yet. Entries appear as the agents call the backend."
-      : "Waiting for the live stream."));
-    return;
-  }
-  list.replaceChildren(...rows.map((log) => {
-    if (log.marker) return h("li", { class: "marker" }, `${time(log.at)} · ${log.text}`);
-    const who = log.actor?.role ?? (log.source === "stripe" ? "stripe" : "—");
-    const whoTone = who === "buyer" ? "info" : who === "supplier" ? "outline" : "";
-    const result = log.outcome === "ok" ? null : badge(log.code ?? log.outcome, log.outcome === "refused" ? "wait" : "bad");
-    return h("li", { class: log.history ? "history" : "" },
-      h("span", { class: "f-time" }, time(log.at)),
-      h("span", { class: "client-row" }, badge(who, whoTone), log.history ? badge("earlier", "outline") : null),
-      h("span", { class: "f-msg" }, log.message ?? log.operation ?? ""),
-      h("span", { class: "client-row" }, badge((log.source ?? "").toUpperCase(), "outline"), result));
-  }));
-}
-
 // ---------- wiring ----------
-$("feed-run-only").addEventListener("change", renderFeed);
-$("feed-reads").addEventListener("change", renderFeed);
-$("connect-form").addEventListener("submit", (event) => {
-  event.preventDefault();
-  try {
-    state.api = normalizeApi($("api-input").value);
-  } catch (error) {
-    showConnect(error instanceof Error ? error.message : "Invalid address.");
-    return;
-  }
-  state.key = $("key-input").value.trim();
-  state.stream = $("stream-input").value.trim();
-  $("key-input").value = "";
-  $("stream-input").value = "";
-  if (!state.key && !state.stream) { showConnect("Enter an observer key, a stream token, or both."); return; }
-  writeHash();
-  void connect();
-});
 $("run-select").addEventListener("change", (event) => selectRun(event.target.value));
 $("pause").addEventListener("click", () => {
   state.paused = !state.paused;
@@ -811,26 +572,10 @@ $("pause").addEventListener("click", () => {
 });
 setInterval(() => { if (state.view && !state.paused) renderElapsed(); }, 1000);
 
-// Pasting a new observer link into an open tab changes only the hash; treat it as a new connection.
-window.addEventListener("hashchange", () => {
-  const next = readHash();
-  if (!next.key && !next.stream) return;
-  try { state.api = normalizeApi(next.api || state.api); } catch { showConnect("Use an https address."); return; }
-  state.key = next.key.trim();
-  state.stream = next.stream.trim();
-  state.runId = next.run;
-  state.newestSeenId = "";
-  writeHash();
-  void connect();
-});
-
 (function start() {
-  const fromLink = readHash();
-  state.runId = fromLink.run;
-  try { state.api = fromLink.api ? normalizeApi(fromLink.api) : ""; } catch { state.api = ""; }
-  state.key = fromLink.key.trim();
-  state.stream = fromLink.stream.trim();
-  writeHash(); // strips both secrets from the address bar and history entry
-  if (state.api && (state.key || state.stream)) void connect();
-  else showConnect(fromLink.api ? "Reopen the full observer link from the operator: secrets are not kept after a reload." : undefined);
+  state.runId = new URLSearchParams(location.hash.slice(1)).get("run") ?? "";
+  $("workspace").hidden = false;
+  $("pause").hidden = false;
+  setConn("slow", "Connecting…");
+  void tick();
 })();
