@@ -15,7 +15,7 @@ Owner: platform integrator. Other workstreams update their own status files and 
 
 - Local `npm run check`: typecheck passed; 5 scaffold tests passed, 8 acceptance TODOs, no failures.
 - Individual agent, sourcing, and integration commands run successfully but contain only TODO acceptance tasks. They do not verify those features yet.
-- Fresh-context scaffold review completed after resolving the public-status path. Hosted CI status must be inspected after the first push; no hosted marketplace run exists yet.
+- Fresh-context scaffold review completed after resolving the public-status path. Initial [GitHub CI run](https://github.com/yauhenifutryn/agent-marketplace/actions/runs/41041768931) succeeded for the platform, agent, sourcing, and integration check groups. This verifies scaffold compilation/tests, including explicit TODOs; no hosted marketplace run exists yet.
 
 ## Next integration step
 
