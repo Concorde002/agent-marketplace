@@ -98,7 +98,9 @@ Webhook handler, local rehearsal (2026-10-30): server on localhost against a dis
 
 Container image, local (2026-10-30): built for arm64 and linux/amd64; inside both builds `npm run check` reported 50 tests, 42 pass, 0 fail, 8 TODO. The 351 MB runtime image contains only `dist/src`, `pg`, and the CA, runs as `node`, and has no `.env`/`.dev.vars`/`whsec` files or key-shaped strings. Scaffold mode: `/health` 200, webhook and settle 501, SIGTERM stops it in under a second. Webhook mode against a disposable Postgres: forged signature 400; signed event applied (pending to succeeded, one event per party); repeat reported as duplicate. `DB_SSL=disable` with a remote host stops startup. From inside the image, a read-only connection to the hosted Supabase project verified TLS with the bundled CA.
 
-Not verified: a hosted endpoint registered with Stripe, a Cloud Run deployment, and settlement through stored orders and the HTTP settle route.
+Hosted (2026-10-30): Cloud Run service in `europe-west1` running this code; `/health` 200, unknown route 404, wrong method 405, settle 501, unsigned or forged webhook 400, 1.1 MB body 413. Stripe sandbox webhook endpoint registered for the service URL with the four `payment_intent` events (17 unused billing events are also selected; the handler acknowledges and ignores them). One €10 sandbox charge produced `payment_intent.succeeded`, which Stripe reported delivered (no pending deliveries) and which appeared in Supabase `marketplace.webhook_events` with the same event id: Stripe → Cloud Run → signature verification → Supabase works end to end. The charge had no matching order, so the handler recorded and ignored it, as designed.
+
+Not verified: settlement through stored orders and the HTTP settle route (needs authentication and order creation), and a webhook that changes a stored payment's status on the hosted service.
 
 ## Dependencies and context upkeep
 
