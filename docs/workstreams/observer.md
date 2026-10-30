@@ -37,7 +37,12 @@ and dark, disconnected state, new-run banner, refused run. Evidence class: local
 4. No hosted timing or three-minute rehearsal with both actual bot clients yet.
 5. `docs/STATUS.md` still says the dashboard is not implemented; the integrator updates it after merge.
 
+6. TED/BZP directory tools and exact identifier resolution are not exposed yet (backend and bot
+   owners). The observer contract they need is in the runbook; the page will not simulate them.
+
 ## Next step
 
-Backend review of the observer API, hosted deployment, then a full rehearsal on the host computer
-using [the runbook](../observer-runbook.md), recording run IDs and measured timing.
+Hosted connection steps 1–6 in [the runbook](../observer-runbook.md#connecting-the-deployed-dashboard-to-the-hosted-backend)
+(maintainer CI approval, review and merge, migration, deploy with the Pages origin, observer key),
+then verification on the host computer with a real bot-driven run, and the success and refusal
+rehearsals once the buyer and supplier accounts are configured.

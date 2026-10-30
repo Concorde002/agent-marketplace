@@ -38,25 +38,99 @@ runs, and a run not visible to this key.
 A newer run never replaces the selected one: a banner offers it. Every run is labelled with its
 own start time, and a finished run is marked "finished before this page opened" when that is true.
 
-## Operator setup (hosted)
+## Connecting the deployed dashboard to the hosted backend
 
-1. Backend developer reviews and merges the observer PR; the operator applies
-   `supabase/migrations/20261030170000_observer.sql` as with the earlier migrations.
-2. Set on the backend service:
-   - `OBSERVER_ALLOWED_ORIGINS=https://agentmarketplace.pages.dev`
-   - optionally `DEPLOYMENT_ENVIRONMENT=hosted` (the default)
-3. Issue a read-only observer key for the demo buyer participant (8 hours, at most 7 days):
+The demo link is **https://agentmarketplace.pages.dev**. The backend serves only the observer API;
+it does not serve a second copy of the page. Steps 1–5 belong to the backend developer and the
+operator (issue #11); the dashboard developer does not run them.
 
-   ```sh
-   npm run observer:operator -- issue --buyer <buyer participant id> --label "Demo rehearsal"
-   ```
+| Step | Who | Done when |
+| --- | --- | --- |
+| 1. Approve the fork's workflows on PR #18 ("Approve and run workflows") | Repo maintainer | Four workstream checks green |
+| 2. Review and merge PR #18 into `main` | Backend developer | Merge commit on `main` |
+| 3. Apply `supabase/migrations/20261030170000_observer.sql` in the Supabase SQL editor, as for the earlier migrations | Operator | Check query below returns three names |
+| 4. Deploy that `main` commit to the Cloud Run service with `OBSERVER_ALLOWED_ORIGINS=https://agentmarketplace.pages.dev` | Operator | The two `curl` checks below pass |
+| 5. Issue a read-only observer key for the demo buyer participant and send the link privately | Operator | Presenter has the link; nothing posted to GitHub or chat |
+| 6. Open the link on the host computer and run the verification list | Presenter + dashboard developer | Every item below ticked |
 
-   It prints the key once and the SQL to run in the database SQL editor. Only the SHA-256 hash is
-   stored. Revoke with `observer:operator -- revoke --session <id>`.
-4. Give the presenter the link privately (not in Git, chat logs or slides):
-   `https://agentmarketplace.pages.dev/#api=<https backend origin>&key=<observer key>`.
-   The page removes the key from the address bar and keeps it only in memory. After a reload,
-   open the link again.
+Step 3 check:
+
+```sql
+select to_regclass('marketplace.agent_traces'), to_regclass('marketplace.client_sightings'),
+       to_regclass('marketplace.observer_sessions');
+```
+
+Step 4 deploy (service name and project as in issue #11; the image build runs `npm run check`):
+
+```sh
+gcloud run deploy <service> --source . --region europe-west1 \
+  --update-env-vars OBSERVER_ALLOWED_ORIGINS=https://agentmarketplace.pages.dev
+```
+
+Step 4 checks:
+
+```sh
+curl -si -X OPTIONS https://<host>/v1/observer/runs \
+  -H 'Origin: https://agentmarketplace.pages.dev' \
+  -H 'Access-Control-Request-Method: GET' -H 'Access-Control-Request-Headers: authorization' | head -5
+# expect 204 and access-control-allow-origin: https://agentmarketplace.pages.dev
+curl -s https://<host>/v1/observer/runs
+# expect {"error":"INVALID_OBSERVER_SESSION",...}. PLATFORM_UNAVAILABLE means the migration is missing.
+```
+
+Step 5 key (no database credential needed to generate it; 8 hours by default, at most 7 days):
+
+```sh
+npm run observer:operator -- issue --buyer <buyer participant id> --label "Demo rehearsal"
+```
+
+It prints the key once and an `insert` to run in the SQL editor; only the key's SHA-256 is stored.
+Send the presenter this link through a private channel (password manager or direct message, never
+GitHub, slides or a shared chat):
+
+`https://agentmarketplace.pages.dev/#api=https%3A%2F%2F<host>&key=<observer key>`
+
+The page removes the key from the address bar and keeps it only in memory; after a reload, open the
+link again. Revoke with `npm run observer:operator -- revoke --session <id>` and run the printed SQL.
+
+### Step 6: verification on the host computer
+
+Record the results in `docs/workstreams/observer.md`. Do not tick an item from a fixture run.
+
+- [ ] Header badge reads **Hosted platform**, not "Not hosted".
+- [ ] A run started from the **buyer's actual bot** appears via the "new run started" banner.
+- [ ] Buyer lane shows its tool calls with channel **MCP**, and the observed client is the name the
+      bot reported in MCP `initialize`, not a fixture driver.
+- [ ] Supplier lane fills only when the supplier's own client acts, with its own observed client.
+- [ ] Sources show real retrieval times, links and hashes; failures appear as failures.
+- [ ] Ranking appears before representative lookup; unresolved companies stay external leads.
+- [ ] Offer revisions and both acceptances match what each bot reported in its chat.
+- [ ] Order ID matches both bots' messages; payment shows **Paid · Stripe sandbox** with a `pi_…`
+      reference, and the same PaymentIntent shows `succeeded` in the Stripe dashboard (test mode).
+- [ ] The refusal case shows "Refused by the platform" (or its real pending state) and no order.
+- [ ] Reloading with the link keeps the selected run; repeated polling adds no traces or events.
+- [ ] Phone width stacks cleanly; projector width shows header, both lanes and outcome.
+- [ ] Measured: retrieval, assessment, resolution, quote, agreement and payment times, with run IDs.
+
+## Observing the TED/BZP directory workflow (pending)
+
+The structured directory (`ProcurementDirectory`, ADR 0001) is not yet mounted as HTTP/MCP tools,
+and company-identifier resolution is not yet exact. The page does not simulate it: today it shows
+the live discovery bundle and says "CPV not recorded". To observe the directory path once the backend
+and bot owners expose it, the observer needs, per run:
+
+1. **Traces**: add each new directory route to `operationFor` in `src/platform/observer.ts`, with
+   the request or discovery id it belongs to, so the buyer lane shows the call.
+2. **Persisted retrieval receipts** linked to the run: provider (TED/BZP), CPV code and keywords,
+   publication date bounds, retrieval timestamp, response SHA-256, returned and omitted counts, and
+   source errors. Exposed as `discovery.collection.directory` and `cpvCodes`.
+3. **Leads with provenance**: reported name, source identifier and scheme (only when unambiguous),
+   country, notice-level CPV, notice URL and publication date.
+4. **Identity resolution after ranking**: per ranked lead, `unique`, `ambiguous` or `missing`, with
+   the matched identifier scheme and the connected demo account only for `unique`.
+
+The page renders these from the projection only. Until they exist, it keeps showing "not recorded"
+rather than inventing directory steps.
 
 ## Deploying the page
 
