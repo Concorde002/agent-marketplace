@@ -9,7 +9,6 @@ import { PlatformClient, PlatformClientError } from "./client.js";
 import type { SupplierAgentConfig } from "./config.js";
 import {
   decideSupplierOffer,
-  supplierInitialAskAmount,
   type NegotiationLimits,
   type SupplierPolicy,
 } from "./policy.js";
@@ -184,6 +183,14 @@ function parseNegotiationStart(raw: string | undefined): number | undefined {
 
 function isAborted(signal: AbortSignal | undefined): boolean {
   return signal !== undefined && signal.aborted;
+}
+
+/** The platform may reserve settlement for the buyer; that is not a listener failure. */
+function isSettlementNotPermitted(error: unknown): boolean {
+  if (!(error instanceof PlatformClientError)) {
+    return false;
+  }
+  return error.status === 403 || error.code === "FORBIDDEN" || error.code === "NOT_AUTHORIZED";
 }
 
 /**
@@ -552,10 +559,29 @@ export class SupplierListener {
     event: ParticipantEvent,
   ): Promise<HandlingOutcome> {
     const orderId = event.resourceId;
-    await this.client.settleOrder(orderId, {
-      idempotencyKey: `listener:${event.id}:settle`,
-    });
+    try {
+      await this.client.settleOrder(orderId, {
+        idempotencyKey: `listener:${event.id}:settle`,
+      });
+    } catch (error) {
+      // Settlement is the payer's action. If the platform only authorizes the buyer, the
+      // supplier still reports from authoritative order state instead of failing the event.
+      if (!isSettlementNotPermitted(error)) {
+        throw error;
+      }
+      this.logger.info?.("supplier cannot initiate settlement; reading order state", {
+        orderId,
+      });
+    }
+
     const order = await this.client.getOrder(orderId);
+    if (order.paymentStatus !== "succeeded" && order.paymentStatus !== "failed") {
+      // The buyer settles; the matching payment_updated event reports the terminal result.
+      return {
+        status: "skipped",
+        reason: `awaiting_payment:${order.paymentStatus}`,
+      };
+    }
     const report = await this.reporter.reportOrder(order, {
       eventId: event.id,
       nowMs: this.now(),
@@ -653,10 +679,9 @@ export class SupplierListener {
     ) {
       return "delivery_after_deadline";
     }
-    const initialAsk = supplierInitialAskAmount(
-      this.config.supplier.minTotalMinor,
-    );
-    if (initialAsk > request.maximumDeliveredTotal.amountMinor) {
+    if (this.config.supplier.minTotalMinor > request.maximumDeliveredTotal.amountMinor) {
+      // Compare the floor, not the opening ask: a buyer budget between floor and ask can
+      // still converge through negotiation.
       return "buyer_budget_below_minimum";
     }
     return undefined;
