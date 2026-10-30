@@ -10,6 +10,7 @@ import { IdentityError, authenticate, registerIdentity } from "./identity.js";
 import { PlatformError, type Database } from "./database.js";
 import { Marketplace } from "./marketplace.js";
 import { observe, type ObserverBus } from "./observer.js";
+import { createPublicDemoObserver } from "./public-demo-observer.js";
 import { DEFAULT_POLICY, SESSION_HEADER, onboard, openSession, sessionState, type OnboardingOptions } from "./onboarding.js";
 import { authenticateObserver, errorCodeFrom, idsFromResponse, listRuns, mcpClientInfo, operationFor, recordSighting, recordTrace,
   runView, touchSighting, type TraceChannel } from "./observer-runs.js";
@@ -24,6 +25,8 @@ export interface PlatformHttpOptions {
   paymentConfigured?: boolean;
   /** Receives one human-readable log per call for the /observer/ws stream. */
   observer?: ObserverBus;
+  /** Public read-only visibility of demo runs. Participant trading credentials remain private. */
+  publicDemoObserver?: { enabled?: boolean };
   /** Automatic demo onboarding over MCP sessions; absent means bearer tokens only. */
   onboarding?: OnboardingOptions;
   /** The read-only observer page API under /v1/observer. */
@@ -57,6 +60,10 @@ export function createPlatformHttp(db: Database, market: Marketplace, options: P
 
   const observerOrigins = new Set(options.observerApi?.allowedOrigins ?? []);
   const environment = options.observerApi?.environment ?? "hosted";
+  const publicDemoObserver = createPublicDemoObserver(db, {
+    ...options.publicDemoObserver, allowedOrigins: [...observerOrigins], environment, now,
+    ...(options.observer ? { observer: options.observer } : {}),
+  });
   // MVP_LIMIT: per-instance write throttle. It only skips redundant bookkeeping; the database stays authoritative.
   const recentSightings = new Map<string, { identity: string; at: number }>();
   /** True when the same client was recorded within the refresh window, so this write can be skipped. */
@@ -73,6 +80,7 @@ export function createPlatformHttp(db: Database, market: Marketplace, options: P
   async function handle(request: Request): Promise<Response> {
     return observe(options.observer, request, "http", async (observed) => {
       const url = new URL(observed.url);
+      if (url.pathname.startsWith("/v1/demo-observer/")) return { response: await publicDemoObserver(observed) };
       if (url.pathname === "/v1/observer" || url.pathname.startsWith("/v1/observer/")) return { response: await observerApi(observed) };
       if (options.onboarding && url.pathname === "/mcp" && !observed.headers.get("authorization")) return onboardingMcp(observed, options.onboarding);
       const startedAt = now();
@@ -256,6 +264,10 @@ export function createPlatformHttp(db: Database, market: Marketplace, options: P
         validateTool("search_buyer_notices", body);
         const args = body as { query: string; limit?: number };
         return json(await market.searchBuyerNotices(args.query, args.limit));
+      }
+      if (url.pathname === "/v1/sources/public-buyer-notices/search") {
+        validateTool("search_public_buyer_notices", body);
+        return json(await market.searchPublicBuyerNotices(actor, body as { cpvCode?: string; keywords?: string; publishedFrom?: string; publishedTo?: string; limit?: number }));
       }
       if (parts[0] === "v1" && parts[1] === "requests" && parts.length === 4) {
         const id = parts[2]!;
