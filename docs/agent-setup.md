@@ -150,6 +150,11 @@ node dist/src/agents/cli/buyer.js                     # exit 0 paid, 2 no match,
 node dist/src/agents/cli/demo.js
 ```
 
+The disposable platform keeps participants and idempotency keys in memory: restart it between
+scenarios. For a refusal rehearsal set `NEGOTIATION_DEADLINE_MS=45000` and `POLL_INTERVAL_MS=500`;
+the supplier reports its refusal reason immediately, and the buyer reports `no match` at its deadline
+because the contract has no refusal event.
+
 Environment for the buyer:
 
 ```sh
