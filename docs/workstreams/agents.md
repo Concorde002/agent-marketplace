@@ -118,10 +118,25 @@ the buyer runtime was extended accordingly rather than replaced by a backend mod
 - Buyer counters that fall below the supplier's private floor are refused by the platform
   (`POLICY_REFUSAL`). The runner now accepts the standing offer instead of losing the deal, without
   learning the floor.
-- `tests/agents/live-platform.ts` boots the real authenticated handler, Marketplace and sourcing
-  pipeline on PGlite with stubbed TED/Tavily and a stubbed settlement provider.
-- `tests/agents/live-buyer.test.ts` (7 tests): notice-bound happy path, polling-only path fails,
-  rejected quotation, unconnected lead, budget below floor, prompt-injection source text, page caps.
+- `tests/agents/support/live-platform.ts` boots the real authenticated handler, Marketplace and
+  sourcing pipeline on PGlite with stubbed TED/Tavily and a stubbed settlement provider. Its
+  `unregistered` option leaves both participants for the agents to register.
+- `tests/agents/live-buyer.test.ts` (11 tests): notice-bound happy path, polling-only path fails,
+  rejected quotation, unconnected lead, budget below floor, prompt-injection source text, page caps,
+  conditional top candidate, first-time registration of both agents, registration above the grant,
+  and an operator domain map ignored in live mode.
+
+Review fixes on this branch:
+
+- **Conditional candidates.** The platform quotes only `eligible: "yes"`. A `conditional` top
+  candidate (a mandatory requirement left `unknown`) used to reach `request_quote`, get
+  `QUALIFYING_CANDIDATE_REQUIRED` and crash the run with no message in either chat. Live mode now
+  quotes only fully eligible candidates, skips that refusal to the next candidate, and otherwise
+  reports `no match`.
+- **No operator map in live mode.** Only `resolve_discovery_participants` chooses a quote recipient.
+- **`POLICY_REFUSAL` only.** The accept-standing-offer fallback no longer triggers on every `403`.
+- **Bot prompts.** The Grok buyer prompt and supplier routine now register on first use within the
+  operator grant, and the buyer quotes only connected `eligible: "yes"` candidates.
 - `tests/agents/live-mcp.test.ts` (4 tests): 18 tools advertised and fixture tools absent; the full
   seven-step sequence through tools only with a hand-written assessment; refusal with no order; the
   supplier token cannot read or assess the buyer's discovery.
@@ -130,7 +145,8 @@ Checks observed on this branch (2026-10-30):
 
 ```
 npm run typecheck
-npm run check    # 319 tests, 315 passed, 0 failed, 4 pre-existing TODO
+npm run test:agents  # 180 passed, 0 failed
+npm run check        # 323 tests, 319 passed, 0 failed, 4 pre-existing TODO
 ```
 
 Evidence class: local protocol with fixture data and a stubbed payment provider. No hosted revision,
@@ -143,12 +159,21 @@ no Stripe sandbox charge, no actual Grok or Instinct account.
 - Instinct has no public developer API and no documented custom MCP or credential storage. The
   named-client integration is **not achieved**; the disclosed fallback is the terminal harness with
   two independent tool-calling agents.
-- The platform must expose `GET /v1/requests/{id}` and `GET /v1/offers/{id}` (scoped), and mount
-  `createMcpHandler(createMcpBackend(...))` at `POST /mcp`. Events must carry request/offer/order ids
-  in `resourceId` as documented in `docs/agent-setup.md`.
-- Resolved by the live branch: offer submission records the author's acceptance, so one counterparty
-  acceptance creates the order (PR #12 checkpoint). Candidate→participant resolution also exists
-  (`resolve_discovery_participants`); the injected map is now a fixture-only fallback.
+- Resolved by the live branch: the scoped read routes exist and `/mcp` is mounted; offer submission
+  records the author's acceptance, so one counterparty acceptance creates the order (PR #12
+  checkpoint); candidate→participant resolution exists (`resolve_discovery_participants`), and the
+  injected map is fixture-only; `ALREADY_REGISTERED` returns the existing `participantId`.
+- Interface request (platform owner): the 5-minute `request_quote` window counts from evidence
+  collection (`discovery_runs.completed_at`), not from the assessment. A real client model reading up
+  to 15 pages can exceed it and then gets `QUALIFYING_CANDIDATE_REQUIRED` for a valid candidate.
+  Through MCP, repeating `start_discovery` for the same request replays the first discovery (stable
+  idempotency key), so the bot cannot retry in-chat. Proposed: start the window at assessment
+  submission.
+- Interface request (platform owner): a buyer counter below the supplier's private floor is refused
+  with `POLICY_REFUSAL`, which tells the buyer the floor lies above that amount. Repeated counters
+  could narrow it down. The runner and prompts never probe, but nothing enforces that. Proposed:
+  accept any counter within the author's own mandate and enforce the counterparty's limits only at
+  acceptance (`accept_offer` already re-checks both).
 - The live CLI `buyer` still polls `get_discovery` and has no assessment step, so it cannot run against
   the live handler (discovery is refused without a bound notice). The live path is the tool sequence
   driven by the client; a two-phase CLI harness (dump evidence → submit assessment file) is not built.
@@ -157,8 +182,6 @@ no Stripe sandbox charge, no actual Grok or Instinct account.
 - No refusal endpoint exists in the contract, so a supplier refusal is recorded locally and expressed
   as non-acceptance; the buyer reports `no match` only at its negotiation deadline. Interface request:
   a scoped decline (`POST /v1/requests/{id}/declines`) that emits an event to the buyer.
-- Interface request: `ALREADY_REGISTERED` should return the existing `participantId` (the local test
-  double does) so a lost state directory does not block a bot.
 
 ## Next task
 

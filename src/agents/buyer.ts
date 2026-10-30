@@ -336,14 +336,17 @@ export class BuyerRunner {
 
     this.resolvedLiveSupplierIds = await this.resolveLiveParticipants(discoveryId);
 
-    const candidates = rankEligibleCandidates(ranking.candidates).slice(
-      0,
-      this.maxCandidates,
-    );
+    // The platform quotes only fully eligible candidates (eligible "yes"); a conditional one has
+    // an unevidenced requirement and would be refused with QUALIFYING_CANDIDATE_REQUIRED.
+    const candidates = rankEligibleCandidates(ranking.candidates)
+      .filter((candidate) => candidate.eligible === "yes")
+      .slice(0, this.maxCandidates);
     if (candidates.length === 0) {
       return this.finishNoMatch(
         "no_candidates",
-        "the frozen ranking contained no eligible candidate",
+        ranking.candidates.some((candidate) => candidate.eligible === "conditional")
+          ? "no ranked candidate met every mandatory requirement; conditional candidates cannot be quoted"
+          : "the frozen ranking contained no eligible candidate",
       );
     }
 
@@ -351,7 +354,7 @@ export class BuyerRunner {
     if (supplierId === undefined) {
       return this.finishNoMatch(
         "no_connected_supplier",
-        "no ranked candidate resolved to a connected supplier participant",
+        "no fully eligible ranked candidate could be quoted: none is connected, or the ranking is older than the platform quote window",
       );
     }
 
@@ -377,7 +380,7 @@ export class BuyerRunner {
     });
   }
 
-  /** Read each source within a hard cap; `816` characters per page is the platform bound. */
+  /** Read each source within hard caps: 5 sources, 3 pages each, 8,000 characters per page. */
   private async readLiveSources(
     discoveryId: string,
     sources: readonly { id: string; url: string }[],
@@ -428,7 +431,7 @@ export class BuyerRunner {
       if (
         entry.connected !== true ||
         entry.participantId === undefined ||
-        entry.eligible === "no"
+        entry.eligible !== "yes"
       ) {
         continue;
       }
@@ -545,7 +548,8 @@ export class BuyerRunner {
         if (
           error instanceof PlatformClientError &&
           (error.code === "NO_CONNECTED_REPRESENTATIVE" ||
-            error.code === "NOT_FOUND")
+            error.code === "NOT_FOUND" ||
+            error.code === "QUALIFYING_CANDIDATE_REQUIRED")
         ) {
           this.logger?.info?.("buyer candidate is not connected; trying next", {
             domain: candidate.candidate.company.officialDomain,
@@ -563,9 +567,9 @@ export class BuyerRunner {
     candidate: RankedCandidate,
   ): ParticipantId | undefined {
     const domain = normalizeDomain(candidate.candidate.company.officialDomain);
-    const resolved = this.resolvedLiveSupplierIds?.[domain];
-    if (resolved !== undefined) {
-      return resolved;
+    if (this.live !== undefined) {
+      // Live mode trusts only the platform's resolution; an operator map never picks a supplier.
+      return this.resolvedLiveSupplierIds?.[domain];
     }
     if (this.supplierIdForCandidate !== undefined) {
       return this.supplierIdForCandidate(candidate);
@@ -980,14 +984,12 @@ function stringValue(value: unknown): string {
   return typeof value === "string" && value.trim() !== "" ? value : "unknown";
 }
 
-/** Only a platform rejection of this assessment maps to a no-match; transport errors rethrow. */
+/** The platform refused an offer as outside a mandate. Other 403s (scope, expiry) are not this. */
 function isPolicyRefusal(error: unknown): boolean {
-  return (
-    error instanceof PlatformClientError &&
-    (error.code === "POLICY_REFUSAL" || error.status === 403)
-  );
+  return error instanceof PlatformClientError && error.code === "POLICY_REFUSAL";
 }
 
+/** Only a platform rejection of this assessment maps to a no-match; transport errors rethrow. */
 function isAssessmentRejection(error: unknown): boolean {
   if (!(error instanceof PlatformClientError)) {
     return false;

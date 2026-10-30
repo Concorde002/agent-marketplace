@@ -48,6 +48,8 @@ export interface LivePlatformOptions {
   supplierDomain?: string;
   paymentOutcome?: "succeeded" | "failed" | "requires_action";
   discoveryFailure?: string;
+  /** Leave both participants unregistered so the agents must register through the API. */
+  unregistered?: boolean;
 }
 
 export interface LivePlatform {
@@ -197,6 +199,10 @@ export async function createLivePlatform(options: LivePlatformOptions = {}): Pro
     insert into marketplace.mandates(participant_id,role,currency,expires_at,min_delivered_total_minor,available_quantity,unit,earliest_delivery_at)
     values('supplier','supplier','EUR','2099-01-02Z',${supplierMin},${supplierQuantity},'box','2026-11-15Z');`);
 
+  if (options.unregistered === true) {
+    // Grants and tokens exist; registration (company + mandate) is left to the agents.
+    await db.exec("delete from marketplace.mandates; update marketplace.participants set registered_at = null, company_name = null, official_domain = null;");
+  }
   const tokens = { buyer: "fixture-buyer-token", supplier: "fixture-supplier-token" };
   for (const [participantId, token] of [["buyer", tokens.buyer], ["supplier", tokens.supplier]] as const) {
     await db.query("insert into marketplace.api_credentials(token_hash,participant_id) values($1,$2)", [

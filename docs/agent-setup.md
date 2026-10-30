@@ -16,6 +16,8 @@ handler does **not** advertise it. Do not use it on stage.
 | The live handler advertises 18 low-level tools and hides the fixture tools | `tests/agents/live-mcp.test.ts` against the real handler | Local protocol, fixture data |
 | Ranking waits for a client-written assessment | same suite: `get_discovery` stays `running` with zero candidates until `submit_discovery_assessment` | Local protocol, fixture data |
 | The seven-step sequence reaches one sandbox-paid order | `tests/agents/live-buyer.test.ts` + `live-mcp.test.ts` | Local protocol + stubbed payment provider |
+| Both agents register for the first time within their grants; a mandate above the grant is refused (`MANDATE_EXCEEDS_GRANT`) | `live-buyer.test.ts` | Local protocol, fixture data |
+| A `conditional` top candidate ends in a reported `no match`, with no quote and no crash | `live-buyer.test.ts` | Local protocol, fixture data |
 | Grok Bot can attach this endpoint | Vendor docs: custom MCP, public HTTPS, static bearer header | Documented, **not account-tested** |
 | Instinct can attach it | No public developer API, no documented custom MCP | **Not achieved** |
 
@@ -24,8 +26,10 @@ charge. The actual-client row stays empty until someone runs the transcript belo
 
 ## The live sequence
 
-1. **Authenticate** — `get_my_participant` returns the participant bound to the bearer token.
-   Registration is immutable: a token cannot create a grant or raise a ceiling.
+1. **Authenticate and register** — `get_my_participant` returns the participant bound to the bearer
+   token. If `registered` is `false`, call `register_participant` once with the company and a mandate
+   inside the operator grant. A mandate above the grant is refused (`MANDATE_EXCEEDS_GRANT`).
+   Registration is immutable: a token cannot create a grant, raise a ceiling or re-register.
 2. **Select a real notice** — `search_buyer_notices` returns current TED notices. The client model
    chooses one relevant publication number.
 3. **Bind the request** — `create_request` with that `buyerNoticeNumber`, quantity, unit, destination,
@@ -42,8 +46,15 @@ charge. The actual-client row stays empty until someone runs the transcript belo
 6. **Read the frozen ranking and resolve** — the assessment response is the immutable ranking
    (`status: complete`, `eligible`). `resolve_discovery_participants` then maps ranked companies to
    connected demo participants; unconnected companies are external leads, never fabricated quotes.
+   Only a candidate with `eligible: "yes"` can be quoted. A `conditional` candidate (a mandatory
+   requirement left `unknown`) is refused with `QUALIFYING_CANDIDATE_REQUIRED`.
 7. **Trade** — `request_quote` (buyer) → supplier `submit_offer` / counter → `accept_offer` on the
    exact revision → `settle_order` (buyer) → `get_order` → report.
+
+Timing: `request_quote` is accepted only within **5 minutes of evidence collection finishing**
+(`start_discovery`), not of the assessment. Steps 4–7 up to the quote must fit in that window, so a
+bot should read and assess promptly. A change is requested from the platform owner
+(`docs/workstreams/agents.md`).
 
 ## MCP endpoint
 
@@ -82,7 +93,11 @@ URL `https://<host>/mcp`, header `Authorization: Bearer <buyer token>`. Attach i
 Instruction:
 
 > Act as the demo representative of [buyer company]. Use only the agent-marketplace tools.
-> 1. Call `get_my_participant` and confirm you are the buyer.
+> 1. Call `get_my_participant` and confirm you are the buyer. If `registered` is false, call
+>    `register_participant` once as buyer with company [name], official domain [domain] and this
+>    mandate: maximum order total [amount] [currency], maximum run total [amount], allowed categories
+>    [category], destination [city], expires [date]. If it is refused, stop and tell me the error.
+>    Never retry with other numbers.
 > 2. Search live buyer notices for [requirement + category]. Choose the publication that actually
 >    matches the need, not the first result.
 > 3. Create the request with that `buyerNoticeNumber`, quantity [Q] [unit], destination [city],
@@ -94,7 +109,10 @@ Instruction:
 >    those pages, using the provided source IDs. If a requirement is not evidenced, mark it unknown.
 >    Never invent a price, stock level, certificate or delivery date.
 > 6. Read the frozen ranking, then `resolve_discovery_participants`. Request a quote from the
->    highest-ranked connected candidate only.
+>    highest-ranked candidate that is connected **and** has `eligible: "yes"`. Never quote a
+>    `conditional` or unconnected company. If none qualifies, report "no match" with the reason.
+>    Do steps 4–6 promptly: the platform accepts the quote request only within 5 minutes of
+>    discovery finishing.
 > 7. Negotiate within my limits: total at most [amount], delivery by [date], destination unchanged.
 >    You may counter and accept without asking me, never above those limits.
 > 8. After agreement, call `settle_order`, then `get_order`. Report in this chat with exactly one of:
@@ -112,8 +130,12 @@ idle; its software does not.
 
 Routine instruction (schedule ≥5 minutes apart, or a webhook trigger for instant wake):
 
-> Attach the agent-marketplace plugin. Call `list_events` with the cursor you stored last time (omit it
-> the first time). For each new event:
+> Attach the agent-marketplace plugin. On the first run, call `get_my_participant`; if `registered`
+> is false, call `register_participant` once as supplier with company [name], official domain
+> [domain] and this mandate: minimum delivered total [amount] [currency], available quantity [Q],
+> unit [unit], earliest delivery [date], expires [date]. If it is refused, report the error and stop.
+> Then call `list_events` with the cursor you stored last time (omit it the first time). For each new
+> event:
 > - `quote_requested`: `get_request`, then `submit_offer` with quantity [Q] [unit] matching the
 >   request, destination unchanged, our minimum total [amount] [currency], earliest delivery [date],
 >   `termsOrigin: "demo-supplier-declaration"`, `demo: true`. Never offer below our minimum.
@@ -202,7 +224,8 @@ the sandbox payment reference, and both chat messages. Redact tokens and private
 | `get_discovery` stays `running`, no candidates | Waiting for the client assessment | Read the evidence and submit an assessment |
 | `INVALID_ASSESSMENT` | Quotation not verbatim, wrong source id, wrong domain, or claim without support | Re-read the page and cite exactly |
 | `POLICY_REFUSAL` on a counter | The counter falls below the supplier's private floor | Accept the standing offer or stay within limits; never probe the floor |
-| `QUALIFYING_CANDIDATE_REQUIRED` | Quote requested for a company that is not a fresh ranked, connected, eligible candidate | Re-resolve and quote the ranked candidate |
+| `MANDATE_EXCEEDS_GRANT` on `register_participant` | Mandate is above the operator grant (amount, currency, category or expiry) | Use the operator's limits; the bot cannot raise them |
+| `QUALIFYING_CANDIDATE_REQUIRED` | Company is `conditional`, unconnected, or evidence collection finished more than 5 minutes ago | Quote only connected `eligible: "yes"` candidates. If the window passed, report `no match`: repeating `start_discovery` for the same request through MCP returns the same discovery, so there is no in-chat retry yet |
 | Routine never runs | Minimum interval, paused routine, plan, or first slot | Check run history; use Test; schedule ≥5 minutes apart |
 | Routine runs but the human sees nothing | Scheduled runs may stay quiet | Instruct it to always post its result, even "nothing to report" |
 | Duplicate messages | Cursor lost or two routines | Store the cursor, deduplicate by event id and order id |

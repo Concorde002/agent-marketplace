@@ -6,9 +6,10 @@ import {
   type BuyerOutcome,
   type LiveAssessmentContext,
 } from "../../src/agents/buyer.js";
-import { PlatformClient } from "../../src/agents/client.js";
+import { PlatformClient, PlatformClientError } from "../../src/agents/client.js";
 import { loadConfig, type BuyerAgentConfig, type SupplierAgentConfig } from "../../src/agents/config.js";
 import { SupplierListener } from "../../src/agents/listener.js";
+import { registerSupplierParticipant } from "../../src/agents/cli/supplier.js";
 import { MemoryAgentStateStore } from "../../src/agents/store.js";
 import {
   createLivePlatform,
@@ -92,6 +93,7 @@ function harness(
     buyerOverrides?: Record<string, string>;
     supplierOverrides?: Record<string, string>;
     live?: boolean;
+    supplierIdsByDomain?: Readonly<Record<string, string>>;
   } = {},
 ): Harness {
   const buyer = new PlatformClient({ baseUrl: live.url, token: live.tokens.buyer, omitActorIdsFromOffers: true });
@@ -119,6 +121,7 @@ function harness(
     report: (outcome) => {
       reports.push(outcome);
     },
+    ...(options.supplierIdsByDomain === undefined ? {} : { supplierIdsByDomain: options.supplierIdsByDomain }),
     ...(options.live === false
       ? {}
       : {
@@ -274,6 +277,81 @@ test("source reads are paginated within the configured bound", async () => {
     assert.ok(context !== undefined);
     assert.equal(context.sources[0]?.text.length, 8_000);
     assert.equal(context.sources[0]?.truncated, true);
+  } finally {
+    await live.close();
+  }
+});
+
+test("a conditional top candidate ends in a reported no match, never a crash or a quote", async () => {
+  const live = await createLivePlatform();
+  try {
+    const run = harness(live, {
+      // The model could not evidence the mandatory requirement, so the platform ranks it conditional.
+      assess: (context) => {
+        const assessment = fixtureAssessment(context.discoveryId);
+        const [candidate] = assessment.candidates;
+        assert.ok(candidate !== undefined);
+        candidate.claims = [{ requirementKey: "quality", outcome: "unknown" }];
+        return Promise.resolve(assessment);
+      },
+    });
+    const outcome = await run.runner.run();
+
+    assert.equal(outcome.status, "no_match");
+    assert.equal(outcome.reason, "no_candidates");
+    assert.match(outcome.message, /^no match — .*conditional/);
+    assert.equal(run.reports.length, 1);
+    assert.equal(await live.counts.quoteRequests(), 0);
+    assert.equal(await live.counts.orders(), 0);
+  } finally {
+    await live.close();
+  }
+});
+
+test("both agents register for the first time within their grants, then trade", async () => {
+  const live = await createLivePlatform({ unregistered: true });
+  try {
+    const run = harness(live);
+    const supplierClient = new PlatformClient({ baseUrl: live.url, token: live.tokens.supplier, omitActorIdsFromOffers: true });
+    const supplierId = await registerSupplierParticipant(supplierClient, supplierConfig(live), new MemoryAgentStateStore());
+    assert.equal(supplierId, "supplier");
+
+    const outcome = await run.runner.run();
+    assert.equal(outcome.status, "agreed_and_paid");
+    await run.listener.tick();
+    assert.match(run.supplierMessages[0] ?? "", /^agreed and sandbox-paid/);
+    assert.equal(await live.counts.orders(), 1);
+    assert.equal(await live.counts.settlements(), 1);
+  } finally {
+    await live.close();
+  }
+});
+
+test("a registration above the operator grant is refused", async () => {
+  const live = await createLivePlatform({ unregistered: true, buyerMaxOrderMinor: 20_000 });
+  try {
+    const run = harness(live, { buyerOverrides: { BUYER_MAX_ORDER_MINOR: "20001" } });
+    await assert.rejects(run.runner.run(), (error: unknown) => {
+      assert.ok(error instanceof PlatformClientError);
+      assert.equal(error.code, "MANDATE_EXCEEDS_GRANT");
+      return true;
+    });
+    assert.equal(await live.counts.quoteRequests(), 0);
+    assert.equal(await live.counts.orders(), 0);
+  } finally {
+    await live.close();
+  }
+});
+
+test("in live mode an operator domain map never chooses an unresolved supplier", async () => {
+  const live = await createLivePlatform({ supplierDomain: "other.example.com" });
+  try {
+    const run = harness(live, { supplierIdsByDomain: { "alpha.example.com": "supplier" } });
+    const outcome = await run.runner.run();
+
+    assert.equal(outcome.status, "no_match");
+    assert.equal(outcome.reason, "no_connected_supplier");
+    assert.equal(await live.counts.quoteRequests(), 0);
   } finally {
     await live.close();
   }
