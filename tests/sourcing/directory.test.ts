@@ -21,7 +21,7 @@ test("supplier directory uses anonymous fixed TED API and structured CPV/date fi
   const payload = { notices: [award], totalNoticeCount: 1, timedOut: false };
   const result = await fixture(payload, async (request) => {
     assert.equal(request.url, TED_DIRECTORY_URL); assert.equal(request.method, "POST");
-    assert.equal(request.redirect, "error"); assert.equal(request.headers.has("authorization"), false);
+    assert.equal(request.redirect, "manual"); assert.equal(request.headers.has("authorization"), false);
     const body = await request.json() as Record<string, unknown>;
     assert.equal(body.scope, "ALL"); assert.equal(body.onlyLatestVersions, true);
     assert.match(body.query as string, /notice-type = can-standard/);

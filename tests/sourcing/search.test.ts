@@ -25,7 +25,7 @@ test("uses documented keyless search, bounded results and no desired-company fil
     calls++;
     assert.equal(request.url, TAVILY_SEARCH_URL);
     assert.equal(request.method, "POST");
-    assert.equal(request.redirect, "error");
+    assert.equal(request.redirect, "manual");
     assert.equal(request.credentials, "omit");
     assert.equal(request.cache, "no-store");
     assert.equal(request.headers.get("x-tavily-access-mode"), "keyless");

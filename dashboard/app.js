@@ -2,7 +2,9 @@
 // as success, or advanced by a timer. The observer key lives only in this tab's memory.
 
 // Fixed public demo backend: read-only, no credentials anywhere in this page.
-const API = "https://agent-marketplace-282760894344.europe-west1.run.app";
+// Cloudflare Worker first; Cloud Run until the Worker has its database. Both read the same database.
+const APIS = ["https://agent-marketplace-api.st-tomaszew.workers.dev", "https://agent-marketplace-282760894344.europe-west1.run.app"];
+let apiIndex = 0;
 const POLL_MS = 2500;
 const MAX_BACKOFF_MS = 15000;
 const SLOW_MS = 5000;
@@ -118,9 +120,13 @@ async function get(path) {
   const started = Date.now();
   const slow = setTimeout(() => setConn("slow", "Waiting for the API…"), SLOW_MS);
   try {
-    const response = await fetch(`${API}/v1/demo-observer/${path}`, { cache: "no-store" });
+    let response;
+    try { response = await fetch(`${APIS[apiIndex]}/v1/demo-observer/${path}`, { cache: "no-store" }); }
+    catch (error) { apiIndex = (apiIndex + 1) % APIS.length; throw error; }
     let body = null;
     try { body = await response.json(); } catch { body = null; }
+    // A run missing on one backend is a real 404; any other failure tries the other backend next poll.
+    if (!response.ok && response.status !== 404) apiIndex = (apiIndex + 1) % APIS.length;
     if (!response.ok) throw new ApiError(response.status, body && body.code);
     const generatedAt = body && body.generatedAt ? Date.parse(body.generatedAt) : NaN;
     if (Number.isFinite(generatedAt)) state.skewMs = generatedAt - (started + Date.now()) / 2;

@@ -1,0 +1,16 @@
+// Cloudflare Worker for the marketplace API. Deploy: see docs/cloudflare-deploy.md.
+// Secrets (never committed): DB_CONNECTION or a Hyperdrive binding, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "agent-marketplace-api",
+  "main": "src/worker.ts",
+  "compatibility_date": "2025-09-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "vars": {
+    "OBSERVER_ALLOWED_ORIGINS": "https://agentmarketplace.pages.dev",
+    "DEPLOYMENT_ENVIRONMENT": "cloudflare"
+  }
+  // After creating Hyperdrive (docs/cloudflare-deploy.md), add:
+  // "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "<hyperdrive id>" }]
+}

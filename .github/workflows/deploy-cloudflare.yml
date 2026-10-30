@@ -1,0 +1,46 @@
+name: deploy-cloudflare
+# Deploys the API Worker and the observer page on every push to main.
+# Repo secrets: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID (required);
+# DB_CONNECTION, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET (optional; synced to the Worker when set).
+on:
+  push: { branches: [main] }
+  workflow_dispatch:
+concurrency: deploy-cloudflare
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      DB_CONNECTION: ${{ secrets.DB_CONNECTION }}
+      STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+      STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+        if: env.CLOUDFLARE_API_TOKEN != ''
+      - uses: actions/setup-node@v4
+        if: env.CLOUDFLARE_API_TOKEN != ''
+        with: { node-version: '22' }
+      - if: env.CLOUDFLARE_API_TOKEN != ''
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Hyperdrive for the database
+        if: env.CLOUDFLARE_API_TOKEN != '' && env.DB_CONNECTION != ''
+        run: |
+          W="npx -y wrangler@4.45.0"
+          ID=$($W hyperdrive list 2>/dev/null | awk -F'│' '/agent-marketplace-db/{gsub(/ /,"",$2); print $2}' | head -1)
+          if [ -z "$ID" ]; then $W hyperdrive create agent-marketplace-db --connection-string="$DB_CONNECTION" >/dev/null
+          else $W hyperdrive update "$ID" --connection-string="$DB_CONNECTION" >/dev/null; fi
+          ID=$($W hyperdrive list 2>/dev/null | awk -F'│' '/agent-marketplace-db/{gsub(/ /,"",$2); print $2}' | head -1)
+          test -n "$ID"
+          node -e 'const fs=require("fs");const s=fs.readFileSync("wrangler.jsonc","utf8").replace(/^\s*\/\/.*$/gm,"");const c=JSON.parse(s);c.hyperdrive=[{binding:"HYPERDRIVE",id:process.argv[1]}];fs.writeFileSync("wrangler.jsonc",JSON.stringify(c,null,2))' "$ID"
+      - name: Stripe secrets
+        if: env.CLOUDFLARE_API_TOKEN != '' && env.STRIPE_SECRET_KEY != ''
+        run: |
+          node -e 'const o={STRIPE_SECRET_KEY:process.env.STRIPE_SECRET_KEY};if(process.env.STRIPE_WEBHOOK_SECRET)o.STRIPE_WEBHOOK_SECRET=process.env.STRIPE_WEBHOOK_SECRET;require("fs").writeFileSync("/tmp/s.json",JSON.stringify(o))'
+          npx -y wrangler@4.45.0 secret bulk /tmp/s.json && rm /tmp/s.json
+      - name: Deploy API Worker
+        if: env.CLOUDFLARE_API_TOKEN != ''
+        run: npx -y wrangler@4.45.0 deploy
+      - name: Deploy observer page
+        if: env.CLOUDFLARE_API_TOKEN != ''
+        run: npx -y wrangler@4.45.0 pages deploy dashboard --project-name agentmarketplace --branch main --commit-hash "$GITHUB_SHA"

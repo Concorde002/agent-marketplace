@@ -96,7 +96,7 @@ export class TedClient {
     // MVP_LIMIT: fixed TED HTTPS origin only, one page per call, no retries or link traversal.
     // Arbitrary supplier URLs need a separate DNS-aware public-destination boundary, not this client.
     const response = await this.fetcher(new Request(TED_SEARCH_URL, {
-      method: "POST", redirect: "error", credentials: "omit", cache: "no-store", referrerPolicy: "no-referrer",
+      method: "POST", redirect: "manual", credentials: "omit", cache: "no-store", referrerPolicy: "no-referrer",
       headers: { "accept": "application/json", "content-type": "application/json" },
       body: JSON.stringify({ ...search, fields: FIELDS, checkQuerySyntax: false, onlyLatestVersions: true }),
       signal,

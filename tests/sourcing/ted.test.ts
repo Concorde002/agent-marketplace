@@ -42,7 +42,7 @@ test("retrieves a bounded real search, not TED's syntax-check-only mode", async 
     calls++;
     assert.equal(request.url, TED_SEARCH_URL);
     assert.equal(request.method, "POST");
-    assert.equal(request.redirect, "error");
+    assert.equal(request.redirect, "manual");
     assert.equal(request.credentials, "omit");
     assert.equal(request.cache, "no-store");
     assert.equal(request.headers.get("authorization"), null);

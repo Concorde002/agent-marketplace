@@ -105,7 +105,7 @@ export class FixedJsonApi {
 
   private async request(url: string, body: string | undefined, signal: AbortSignal): Promise<JsonApiResult> {
     const response = await this.#fetcher(new Request(url, {
-      method: body === undefined ? "GET" : "POST", redirect: "error", credentials: "omit", cache: "no-store", referrerPolicy: "no-referrer", signal,
+      method: body === undefined ? "GET" : "POST", redirect: "manual", credentials: "omit", cache: "no-store", referrerPolicy: "no-referrer", signal,
       headers: { ...this.#headers, "accept": "application/json", "content-type": "application/json" }, ...(body === undefined ? {} : { body }),
     }));
     const fail = (code: SourceApiError["code"], message: string): never => {

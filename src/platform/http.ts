@@ -87,7 +87,7 @@ export function createPlatformHttp(db: Database, market: Marketplace, options: P
       const context: DispatchContext = {};
       const response = await dispatch(observed, context);
       // Bounded: tracing is bookkeeping and must never hold the participant's answer.
-      if (context.actor) await Promise.race([trace(observed, url, context, response, startedAt), new Promise((resolve) => setTimeout(resolve, TRACE_BUDGET_MS).unref())]);
+      if (context.actor) await Promise.race([trace(observed, url, context, response, startedAt), new Promise((resolve) => (setTimeout(resolve, TRACE_BUDGET_MS) as { unref?: () => void }).unref?.())]);
       return { response, actor: context.actor };
     });
   }
