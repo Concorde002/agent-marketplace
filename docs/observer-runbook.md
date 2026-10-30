@@ -132,6 +132,17 @@ and bot owners expose it, the observer needs, per run:
 The page renders these from the projection only. Until they exist, it keeps showing "not recorded"
 rather than inventing directory steps.
 
+## Observer link format
+
+`https://agentmarketplace.pages.dev/#api=<https backend origin>&key=<obs_ observer key>&stream=<stream token>`
+
+- `key`: per-buyer `obs_…` observer key (step 5). Drives run details, lanes, order and payment.
+- `stream`: the server's read-only `OBSERVER_TOKEN` for `wss://<host>/observer/ws`. Drives the
+  "Live activity" feed and makes the run view refresh as soon as an agent acts.
+- Either one alone works: key only gives polling run details; stream only gives the live log
+  without authoritative order or payment state. Both are removed from the address bar and kept in
+  memory only. Never post either in GitHub, slides or a shared chat; if one was posted, rotate it.
+
 ## Deploying the page
 
 ```sh
