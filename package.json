@@ -13,15 +13,18 @@
     "test:sourcing": "npm run build && node --test dist/tests/sourcing/*.test.js",
     "test:e2e": "npm run build && node --test dist/tests/integration/*.test.js",
     "check": "npm run typecheck && npm test",
-    "payments:operator": "npm run build --silent && node --env-file-if-exists=.env.local --env-file-if-exists=.dev.vars dist/src/payments/operator-cli.js"
+    "payments:operator": "npm run build --silent && node --env-file-if-exists=.env.local --env-file-if-exists=.dev.vars dist/src/payments/operator-cli.js",
+    "observer:operator": "npm run build --silent && node dist/src/platform/observer-cli.js"
   },
   "devDependencies": {
     "@electric-sql/pglite": "0.5.13",
     "@types/node": "22.20.5",
     "@types/pg": "8.23.1",
+    "@types/ws": "8.18.2",
     "typescript": "5.9.3"
   },
   "dependencies": {
-    "pg": "8.23.1"
+    "pg": "8.23.1",
+    "ws": "8.22.0"
   }
 }

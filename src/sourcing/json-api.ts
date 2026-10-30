@@ -1,4 +1,5 @@
-export type JsonEndpoint = "https://api.tavily.com/search" | "https://api.tavily.com/extract";
+export type JsonEndpoint = "https://api.tavily.com/search" | "https://api.tavily.com/extract" |
+  "https://api.ted.europa.eu/v3/notices/search" | "https://ezamowienia.gov.pl/mo-board/api/v1/notice";
 
 export class SourceApiError extends Error {
   constructor(readonly code: "INVALID_INPUT" | "HTTP" | "NETWORK" | "TIMEOUT" | "CANCELLED" | "TOO_LARGE" | "INVALID_RESPONSE", readonly url: string, message: string) {
@@ -36,7 +37,8 @@ export class FixedJsonApi {
     const timeout = options.timeoutMs ?? 10_000;
     const maxBytes = options.maxResponseBytes ?? 2 * 1024 * 1024;
     const headers = options.headers ?? {};
-    if (!["https://api.tavily.com/search", "https://api.tavily.com/extract"].includes(options.endpoint) ||
+    if (!["https://api.tavily.com/search", "https://api.tavily.com/extract", "https://api.ted.europa.eu/v3/notices/search", "https://ezamowienia.gov.pl/mo-board/api/v1/notice"].includes(options.endpoint) ||
+        (!options.endpoint.startsWith("https://api.tavily.com/") && Object.keys(headers).length > 0) ||
         !Number.isInteger(timeout) || timeout < 1 || timeout > 30_000 ||
         !Number.isInteger(maxBytes) || maxBytes < 1024 || maxBytes > 2 * 1024 * 1024 ||
         Object.entries(headers).some(([key, value]) => !["authorization", "x-tavily-access-mode"].includes(key.toLowerCase()) ||
@@ -54,9 +56,22 @@ export class FixedJsonApi {
   async post(body: unknown, signal?: AbortSignal): Promise<JsonApiResult> {
     let serialized: string | undefined;
     try { serialized = JSON.stringify(body); } catch { /* handled as invalid input below */ }
-    if (serialized === undefined || new TextEncoder().encode(serialized).byteLength > 512 * 1024) {
+    if (this.#endpoint.includes("ezamowienia.gov.pl") || serialized === undefined || new TextEncoder().encode(serialized).byteLength > 512 * 1024) {
       throw new SourceApiError("INVALID_INPUT", this.#endpoint, "Invalid or oversized source API input");
     }
+    return this.run(this.#endpoint, serialized, signal);
+  }
+
+  async get(parameters: URLSearchParams, signal?: AbortSignal): Promise<JsonApiResult> {
+    if (this.#endpoint !== "https://ezamowienia.gov.pl/mo-board/api/v1/notice" ||
+        [...parameters].some(([key, value]) => !["NoticeType", "PublicationDateFrom", "PublicationDateTo", "PageSize", "CpvCode", "OrderObject"].includes(key) || /[\u0000-\u001f\u007f]/u.test(value)) ||
+        parameters.toString().length > 4000) {
+      throw new SourceApiError("INVALID_INPUT", this.#endpoint, "Invalid fixed API query");
+    }
+    return this.run(`${this.#endpoint}?${parameters}`, undefined, signal);
+  }
+
+  private async run(url: string, body: string | undefined, signal?: AbortSignal): Promise<JsonApiResult> {
     if (signal?.aborted) throw new SourceApiError("CANCELLED", this.#endpoint, "Source API operation cancelled");
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -75,7 +90,7 @@ export class FixedJsonApi {
       signal?.addEventListener("abort", onAbort, { once: true });
     });
     try {
-      return await Promise.race([this.request(serialized, controller.signal), interrupted]);
+      return await Promise.race([this.request(url, body, controller.signal), interrupted]);
     } catch (error) {
       if (timedOut) throw new SourceApiError("TIMEOUT", this.#endpoint, "Source API time limit exceeded");
       if (signal?.aborted) throw new SourceApiError("CANCELLED", this.#endpoint, "Source API operation cancelled");
@@ -88,10 +103,10 @@ export class FixedJsonApi {
     }
   }
 
-  private async request(body: string, signal: AbortSignal): Promise<JsonApiResult> {
-    const response = await this.#fetcher(new Request(this.#endpoint, {
-      method: "POST", redirect: "error", credentials: "omit", cache: "no-store", referrerPolicy: "no-referrer", signal,
-      headers: { ...this.#headers, "accept": "application/json", "content-type": "application/json" }, body,
+  private async request(url: string, body: string | undefined, signal: AbortSignal): Promise<JsonApiResult> {
+    const response = await this.#fetcher(new Request(url, {
+      method: body === undefined ? "GET" : "POST", redirect: "error", credentials: "omit", cache: "no-store", referrerPolicy: "no-referrer", signal,
+      headers: { ...this.#headers, "accept": "application/json", "content-type": "application/json" }, ...(body === undefined ? {} : { body }),
     }));
     const fail = (code: SourceApiError["code"], message: string): never => {
       void response.body?.cancel().catch(() => {});
@@ -99,7 +114,7 @@ export class FixedJsonApi {
     };
     if (signal.aborted) fail("CANCELLED", "Source API operation cancelled");
     if (!response.ok) fail("HTTP", `Source API returned HTTP ${response.status}`);
-    if (response.redirected || (response.url && response.url !== this.#endpoint)) fail("INVALID_RESPONSE", "Unexpected source API response location");
+    if (response.redirected || (response.url && response.url !== url)) fail("INVALID_RESPONSE", "Unexpected source API response location");
     if (response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() !== "application/json") fail("INVALID_RESPONSE", "Source API did not return JSON");
     if (Number(response.headers.get("content-length")) > this.#maxBytes) fail("TOO_LARGE", "Source API response exceeds byte limit");
     if (!response.body) fail("INVALID_RESPONSE", "Source API returned no body");
@@ -133,7 +148,7 @@ export class FixedJsonApi {
     try { payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); }
     catch { throw new SourceApiError("INVALID_RESPONSE", this.#endpoint, "Source API returned invalid JSON or UTF-8"); }
     const digest = await crypto.subtle.digest("SHA-256", bytes.buffer);
-    return { url: this.#endpoint, retrievedAt: this.#now().toISOString(),
+    return { url, retrievedAt: this.#now().toISOString(),
       contentHash: `sha256:${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")}`, payload };
   }
 }

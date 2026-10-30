@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex">
+  <title>Marketplace Observer</title>
+  <meta name="description" content="Read-only view of one demo buyer's sourcing runs: agent actions, public sources, ranking, agreement and sandbox payment.">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Inter+Tight:wght@300;400;500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="orb" aria-hidden="true"></span>
+      <span class="brand-name">Agent Marketplace</span>
+      <span class="brand-sub">Observer</span>
+    </div>
+    <div class="topbar-right">
+      <span id="env-badge" class="badge" hidden></span>
+      <span id="conn" class="conn" data-state="idle"><span class="conn-dot"></span><span id="conn-text">Not connected</span></span>
+      <button id="pause" class="pill pill-ghost" type="button" hidden>Pause</button>
+    </div>
+  </header>
+
+  <main id="main">
+    <section id="connect" class="panel connect" hidden>
+      <h1 class="display">Watch a live run</h1>
+      <p class="lede">Open the observer link the operator sent you, or paste its parts here. The key is read-only, stays in this tab's memory and is removed from the address bar.</p>
+      <form id="connect-form" class="connect-form" autocomplete="off">
+        <label>API address<input id="api-input" name="api" type="url" placeholder="https://your-marketplace-host" required spellcheck="false"></label>
+        <label>Observer key<input id="key-input" name="key" type="password" placeholder="obs_…" required spellcheck="false"></label>
+        <button class="pill" type="submit">Connect</button>
+      </form>
+      <p id="connect-error" class="error-text" role="alert" hidden></p>
+    </section>
+
+    <section id="workspace" hidden>
+      <div class="runbar">
+        <label class="run-select">
+          <span class="label-sm">Run</span>
+          <select id="run-select" aria-label="Select run"></select>
+        </label>
+        <span id="run-kind" class="badge"></span>
+        <div id="new-run" class="new-run" hidden role="status">
+          <span id="new-run-text"></span>
+          <button id="new-run-open" class="pill" type="button">View new run</button>
+        </div>
+      </div>
+
+      <div id="stale" class="notice notice-warn" hidden role="status"></div>
+      <div id="empty" class="panel empty" hidden>
+        <h2 class="h2">No runs yet</h2>
+        <p class="muted">Start a request from the buyer's bot. This page never starts or retries a run.</p>
+      </div>
+
+      <div id="run" hidden>
+        <section class="hero panel">
+          <div class="hero-main">
+            <div class="phase-line"><span id="phase-orb" class="orb orb-lg" aria-hidden="true"></span><h1 id="phase" class="display"></h1></div>
+            <p id="need" class="lede"></p>
+          </div>
+          <dl class="facts">
+            <div><dt>Elapsed</dt><dd id="elapsed" class="mono"></dd></div>
+            <div><dt>Started</dt><dd id="started" class="mono"></dd></div>
+            <div><dt>Last activity</dt><dd id="last-activity" class="mono"></dd></div>
+            <div><dt>Run ID</dt><dd id="run-id" class="mono wrap"></dd></div>
+          </dl>
+          <ol id="steps" class="steps" aria-label="Run progress"></ol>
+        </section>
+
+        <div class="lanes">
+          <section class="lane panel" id="lane-buyer" aria-label="Buyer agent"></section>
+          <section class="lane panel" id="lane-supplier" aria-label="Supplier agent"></section>
+        </div>
+
+        <section class="panel outcome" id="outcome" aria-label="Quote, agreement and payment"></section>
+
+        <section class="panel" aria-label="Public source evidence">
+          <details id="evidence" class="disclosure">
+            <summary><span class="h2">Public sources</span><span id="evidence-summary" class="muted"></span></summary>
+            <div id="evidence-body"></div>
+          </details>
+        </section>
+
+        <section class="panel" aria-label="Candidate comparison">
+          <details id="ranking" class="disclosure" open>
+            <summary><span class="h2">Candidate comparison</span><span id="ranking-summary" class="muted"></span></summary>
+            <div id="ranking-body"></div>
+          </details>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer muted">
+    Read-only. Shows only what the platform recorded: no simulated progress. Companies are demo accounts that simulate real firms; offers and payments are sandbox only.
+  </footer>
+  <script src="app.js" type="module"></script>
+</body>
+</html>

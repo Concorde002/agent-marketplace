@@ -6,6 +6,9 @@
  *   DB_CONNECTION           Postgres URL for a login role in marketplace_app
  *   DB_CA_FILE              CA certificate for TLS verification (Supabase: prod-ca-2021.crt)
  *   DB_SSL=disable          only accepted for a database on localhost
+ *   OBSERVER_TOKEN          read-only token for the /observer/ws log stream; without it, loopback only
+ *   OBSERVER_ALLOWED_ORIGINS comma-separated https origins of the read-only observer page (CORS)
+ *   DEPLOYMENT_ENVIRONMENT  label shown on the observer page (default "hosted")
  */
 import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -19,6 +22,8 @@ import { toNodeListener } from "./server-adapter.js";
 import { postgresDatabase } from "./platform/database.js";
 import { Marketplace } from "./platform/marketplace.js";
 import { createPlatformHttp } from "./platform/http.js";
+import { ObserverBus } from "./platform/observer.js";
+import { attachObserverSocket, OBSERVER_PATH } from "./platform/observer-socket.js";
 
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 
@@ -35,13 +40,24 @@ export function databaseSsl(env: NodeJS.ProcessEnv, connectionString: string): p
   return env.DB_CA_FILE ? { ca: readFileSync(env.DB_CA_FILE, "utf8") } : true;
 }
 
-export function buildDependencies(env: NodeJS.ProcessEnv): { deps: Dependencies; pool?: pg.Pool; notes: string[] } {
+/** Exact https origins (or localhost for rehearsal) allowed to call the observer API from a browser. */
+export function observerOrigins(env: NodeJS.ProcessEnv): string[] {
+  const origins = (env.OBSERVER_ALLOWED_ORIGINS ?? "").split(",").map((value) => value.trim()).filter((value) => value !== "");
+  for (const origin of origins) {
+    const url = new URL(origin);
+    const local = url.protocol === "http:" && LOCAL_HOSTS.has(url.hostname);
+    if ((url.protocol !== "https:" && !local) || url.origin !== origin) throw new Error(`OBSERVER_ALLOWED_ORIGINS entry is not an exact https origin: ${origin}`);
+  }
+  return origins;
+}
+
+export function buildDependencies(env: NodeJS.ProcessEnv, observer = new ObserverBus()): { deps: Dependencies; pool?: pg.Pool; notes: string[] } {
   const notes: string[] = [];
   const connectionString = env.DB_CONNECTION;
   if (!connectionString) {
     if (env.STRIPE_WEBHOOK_SECRET) throw new Error("DB_CONNECTION is required when STRIPE_WEBHOOK_SECRET is set");
     notes.push("DB_CONNECTION not set: authenticated marketplace API is unavailable");
-    return { deps: {}, notes };
+    return { deps: { observer }, notes };
   }
   const pool = new pg.Pool({ connectionString, ssl: databaseSsl(env, connectionString), max: 5, connectionTimeoutMillis: 10_000 });
   const paymentStore = new PostgresPaymentStore(pool);
@@ -53,7 +69,11 @@ export function buildDependencies(env: NodeJS.ProcessEnv): { deps: Dependencies;
     webhookSecret = stripe.webhookSecret;
   }
   const market = new Marketplace(postgresDatabase(pool), { paymentStore, ...(settlement ? { settlement } : {}) });
-  const deps: Dependencies = { platform: createPlatformHttp(postgresDatabase(pool), market, { paymentConfigured: !!settlement && !!webhookSecret }) };
+  const deps: Dependencies = { observer, platform: createPlatformHttp(postgresDatabase(pool), market, {
+    paymentConfigured: !!settlement && !!webhookSecret,
+    observer,
+    observerApi: { allowedOrigins: observerOrigins(env), environment: env.DEPLOYMENT_ENVIRONMENT ?? "hosted" },
+  }) };
   if (settlement && webhookSecret) deps.stripeWebhook = { settlement, secret: webhookSecret };
   notes.push("Authenticated marketplace API and /mcp configured; database migrations and scoped bot credentials required");
   notes.push(deps.stripeWebhook ? "POST /webhooks/stripe enabled" : "Stripe webhook not configured; hosted payment acceptance remains unverified");
@@ -62,11 +82,15 @@ export function buildDependencies(env: NodeJS.ProcessEnv): { deps: Dependencies;
 
 const isEntryPoint = import.meta.url === new URL(process.argv[1] ?? "", "file://").href;
 if (isEntryPoint) {
-  const { deps, pool, notes } = buildDependencies(process.env);
+  const observer = new ObserverBus();
+  const { deps, pool, notes } = buildDependencies(process.env, observer);
   const port = Number(process.env.PORT ?? 8080);
   const server = createServer(toNodeListener((request) => handleRequest(request, deps)));
+  const observerToken = process.env.OBSERVER_TOKEN?.trim() || undefined;
+  const stream = attachObserverSocket(server, observer, { token: observerToken });
+  notes.push(`observer stream at ${OBSERVER_PATH} (${observerToken ? "OBSERVER_TOKEN required" : "loopback only; set OBSERVER_TOKEN for remote clients"})`);
   server.listen(port, () => console.error(`listening on :${port}; ${notes.join("; ")}`));
-  const shutdown = () => server.close(() => void pool?.end().finally(() => process.exit(0)));
+  const shutdown = () => void stream.close().then(() => server.close(() => void pool?.end().finally(() => process.exit(0))));
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
 }

@@ -18,9 +18,9 @@ This owner implements hosting and Stripe; Jenya does not need to duplicate them.
 
 ## Current state
 
-Branch `maksym/live-integration-review`, from `9698789` on `feat/live-marketplace-integration` (PR #12), issue #11. Locally implemented and tested: scoped token authentication and bounded registration, persistent discovery evidence and client assessment, frozen ranking, post-ranking account resolution, offers with both persisted acceptances, one order per request, and Stripe sandbox settlement through `POST /v1/orders/{id}/settle`. HTTP and `/mcp` share one implementation. `POST /webhooks/stripe` is proven hosted (below).
+`main` (`674a107`) implements, with local tests: scoped token authentication and bounded registration, persistent discovery evidence and client assessment, frozen ranking, post-ranking account resolution, offers with both persisted acceptances, one order per request, and Stripe sandbox settlement through `POST /v1/orders/{id}/settle`. HTTP and `/mcp` share one implementation, and the observer page API and `/observer/ws` stream sit alongside it. This branch (PR #15) adds the PR #12 review fixes below on top of `main`.
 
-**Not hosted.** Cloud Run still serves the pre-PR #12 revision (`/health` reports `scaffold`, `/mcp` 404, `/v1/*` 501). The Supabase project does not yet have `20261030133000_live_marketplace_api.sql` and has no operator grants, participants, credentials, or saved cards. `marketplaceReady` stays `false`.
+**Hosted, unauthenticated only.** Cloud Run serves `674a107`, without these fixes, and Supabase has all three migrations. There are no operator grants, participants, bot credentials, saved card or observer key yet, so no authenticated hosted operation has run. `marketplaceReady` stays `false`.
 
 Stripe sandbox settlement in `src/payments/` ([payments-design.md](../payments-design.md)): one off-session PaymentIntent per order with an order-derived idempotency key; live keys refused; signed, deduplicated webhooks; buyer-only, amount from the accepted offer, mandate and atomic run-total checks. `MVP_LIMIT`: no supplier payout or Connect account.
 
@@ -42,10 +42,12 @@ Open, not fixed here: the invited supplier reads the request's `maximumDelivered
 
 Operator steps for hosted acceptance (#11), in order. None run at server startup, and no credential or private limit goes into GitHub or an agent prompt.
 
-1. Apply `20261030133000_live_marketplace_api.sql` to Supabase (SQL editor or `psql --single-transaction`).
-2. Deploy this branch's commit to Cloud Run with the existing secrets, then confirm `/health` reports `demo-api` with `sourcingReady: true`.
-3. Provision one buyer and one supplier: operator grants, participants, and one bearer token each; store only the SHA-256 token hash in `api_credentials`. Save the buyer's sandbox card with `npm run payments:operator -- setup-buyer` and insert its record into `payment_credentials`.
-4. Run the hosted authenticated scenario: discovery, offer, both acceptances, settle, Stripe-confirmed payment, plus an over-budget refusal.
+Done: both PR #12 migrations and the observer migration are applied; `main` is deployed with Stripe, `OBSERVER_ALLOWED_ORIGINS` and `OBSERVER_TOKEN`.
+
+1. Merge this PR and redeploy, so the hosted service gets the floor, closed-request, acceptance, legacy-offer and upload-deadline fixes.
+2. Provision one buyer and one supplier: operator grants, participants, and one bearer token each; store only the SHA-256 token hash in `api_credentials`. Save the buyer's sandbox card with `npm run payments:operator -- setup-buyer` and insert its record into `payment_credentials`.
+3. Issue an observer key with `npm run observer:operator -- issue --buyer <id> --label <text>`.
+4. Run the hosted authenticated scenario: discovery, offer, both acceptances, settle, Stripe-confirmed payment, plus an over-budget refusal, watched on the observer page.
 
 ### Container image
 
@@ -55,7 +57,7 @@ Operator steps for hosted acceptance (#11), in order. None run at server startup
 
 ### Server configuration
 
-`PORT` (default 8080), `STRIPE_SECRET_KEY` (sandbox only), `STRIPE_WEBHOOK_SECRET` (enables the webhook route), `DB_CONNECTION` (login role in `marketplace_app`), `DB_CA_FILE` (Supabase CA, `prod-ca-2021.crt`). TLS to the database is always verified; `DB_SSL=disable` is accepted only for a database on localhost, and `sslmode` in `DB_CONNECTION` is refused because node-postgres would let it override the CA. Dependencies added: `pg` 8.23.1 (runtime), `@types/pg` 8.23.1 and `@electric-sql/pglite` 0.5.13 (tests). `tsconfig.json` sets `skipLibCheck` because PGlite's published types reference `@types/emscripten`, which it does not ship.
+`PORT` (default 8080), `STRIPE_SECRET_KEY` (sandbox only), `STRIPE_WEBHOOK_SECRET` (enables the webhook route), `DB_CONNECTION` (login role in `marketplace_app`), `DB_CA_FILE` (Supabase CA, `prod-ca-2021.crt`), `OBSERVER_TOKEN` (read-only token for `/observer/ws`; never a bot or operator token). TLS to the database is always verified; `DB_SSL=disable` is accepted only for a database on localhost, and `sslmode` in `DB_CONNECTION` is refused because node-postgres would let it override the CA. Dependencies added: `pg` 8.23.1 (runtime), `@types/pg` 8.23.1 and `@electric-sql/pglite` 0.5.13 (tests). `tsconfig.json` sets `skipLibCheck` because PGlite's published types reference `@types/emscripten`, which it does not ship.
 
 ### Database (Supabase Postgres)
 
@@ -82,6 +84,27 @@ npm run payments:operator -- smoke-charge --customer <cus_…> --payment-method 
 
 The printed credential record belongs in server-side storage, not in Git.
 
+### Observer log stream
+
+`GET /observer/ws` streams one human-readable log per endpoint call to WebSocket clients, for the observer dashboard in the [three-minute demo handoff](../handoffs/2026-10-30-three-minute-demo.md). Message kinds, fields, operations and redaction rules: [observer-stream.md](../observer-stream.md). Clients need `OBSERVER_TOKEN` (sent as a subprotocol); without it only loopback clients connect, which admits nobody behind Cloud Run. The token is read-only and must never be given to a bot. `MVP_LIMIT`: fan-out is in-process, so run Cloud Run with `--max-instances=1` for the demo.
+
+Checked locally (2026-10-30), disposable fixtures only: `tests/platform/observer.test.ts` adds 11 tests on PGlite and loopback sockets (one log per call in order, MCP correlation, redaction of budgets/floors/tokens/headers, refusals, token and loopback gating, broadcast and backlog, read-only stream). Each of 9 safeguards was removed one at a time and a test failed each time. `npm run check`: 333 tests, 329 pass, 0 fail, 4 TODO, against 322/318 on main `cd23842`. `node dist/src/server.js` with `OBSERVER_TOKEN`: unauthenticated upgrade refused with 401; an authorised client received `hello` and one log per HTTP call. Not verified hosted.
+
+### Observer page API (#18)
+
+Integrated from PR #18 on branch `maksym/observer-dashboard-backend`, with #18's four commits kept. Projection and traces live in `src/platform/observer-runs.ts`, because #19 already uses `observer.ts` for the stream. Its `createPlatformHttp` settings are now `observerApi`. `GET /v1/observer/runs[/{runId}]` accepts only an operator-issued `obs_` key: stored as a SHA-256 hash, scoped to one buyer's runs, expiring within 7 days, revocable. CORS allows only exact `OBSERVER_ALLOWED_ORIGINS`. `supabase/migrations/20261030170000_observer.sql` adds `agent_traces`, `client_sightings` and `observer_sessions`.
+
+Review: authentication, scoping (another buyer's run is a plain 404), CORS, phase derivation and redaction are sound. The projection maps every field explicitly and never reads mandates, grants, credentials, payment methods or the request budget. The page keeps its key in the URL fragment, in memory only, uses no HTML-injection sinks and ships a strict CSP. Fixed, each with a test that fails without it:
+
+1. Trace writes held every authenticated response, outside any statement timeout. The response now waits at most 250 ms; slower writes finish in the background.
+2. The client sighting was rewritten on every call, including event polls. An unchanged client is now rewritten at most every 30 s; a changed version is recorded at once.
+3. The observer page's requests showed in the stream as `unknown_route`. They are now `observer_list_runs`, `observer_get_run` and `observer_preflight`.
+4. The projection tests lived in `tests/observer/`, which CI never runs. They now run in `test:platform`.
+
+The observer key, like `OBSERVER_TOKEN`, must never reach a bot: both views show each side's offers and refusals.
+
+Checked locally (2026-10-30): `npm run check` at #18's head `74e9b52`: 332 tests, 328 pass, 0 fail, 4 TODO, plus 10/10 observer tests. After integration and fixes (3 runs): 346 tests, 342 pass, 0 fail, 4 TODO. Each of 6 fixes removed one at a time: a test failed each time. All three migrations applied with `psql --single-transaction` to disposable Postgres 17.11. As the backend role, trace inserts, sighting upserts and session reads work. Creating or un-revoking sessions, and updating or deleting traces, are refused. `anon`/`authenticated` have no grants, RLS is on for all three tables, keys over 7 days are refused, and re-applying fails safely. Not verified hosted.
+
 ## Verification
 
 Run `npm run test:platform` and `npm run check`.
@@ -104,7 +127,7 @@ Webhook handler, local rehearsal (2026-10-30): server on localhost against a dis
 
 Container image, local (2026-10-30): built for arm64 and linux/amd64; inside both builds `npm run check` reported 50 tests, 42 pass, 0 fail, 8 TODO. The 351 MB runtime image contains only `dist/src`, `pg`, and the CA, runs as `node`, and has no `.env`/`.dev.vars`/`whsec` files or key-shaped strings. Scaffold mode: `/health` 200, webhook and settle 501, SIGTERM stops it in under a second. Webhook mode against a disposable Postgres: forged signature 400; signed event applied (pending to succeeded, one event per party); repeat reported as duplicate. `DB_SSL=disable` with a remote host stops startup. From inside the image, a read-only connection to the hosted Supabase project verified TLS with the bundled CA.
 
-Hosted webhook (2026-10-30): Stripe sandbox endpoint registered for the Cloud Run URL with the four `payment_intent` events. One €10 sandbox charge's `payment_intent.succeeded` was reported delivered by Stripe and recorded in Supabase `marketplace.webhook_events` with the same event id.
+Hosted (2026-10-30): Cloud Run service in `europe-west1` running this code; `/health` 200, unknown route 404, wrong method 405, settle 501, unsigned or forged webhook 400, 1.1 MB body 413. Stripe sandbox webhook endpoint registered for the service URL with the four `payment_intent` events (17 unused billing events are also selected; the handler acknowledges and ignores them). One €10 sandbox charge produced `payment_intent.succeeded`, which Stripe reported delivered (no pending deliveries) and which appeared in Supabase `marketplace.webhook_events` with the same event id: Stripe → Cloud Run → signature verification → Supabase works end to end. The charge had no matching order, so the handler recorded and ignored it, as designed.
 
 PR #12 review, local (2026-10-30), at `9698789` then this branch:
 
@@ -113,7 +136,9 @@ PR #12 review, local (2026-10-30), at `9698789` then this branch:
 - `tests/platform/concurrency-postgres.test.ts` (5) needs real simultaneous connections. Opt-in with `MARKETPLACE_TEST_ADMIN_URL` pointing at a disposable Postgres; it creates and drops its own database. On Postgres 17.11: 8 simultaneous acceptances return one agreed order; two suppliers on one request give one order and `REQUEST_CLOSED`; two 4-unit orders against capacity 5 give one order and `POLICY_REFUSAL`; 6 identical idempotent requests create one; a counteroffer racing an acceptance has one winner. With the race fix removed, the first test fails. `npm run test:platform` with Postgres: 82 tests, 82 pass.
 - Both migrations applied in order with `psql --single-transaction` to Postgres 17.11: 22 tables, RLS on all; new columns and both freeze triggers present; `anon` cannot execute the new functions; re-applying the additive migration fails rather than duplicating.
 
-Not verified: anything on the hosted service beyond the webhook. The PR #12 revision is not deployed and its migration and participants are not provisioned (see Next task).
+Hosted (2026-10-30, Cloud Run serving `main` `674a107`, before this PR): `/health` `demo-api` with `sourcingReady` and `sandboxPaymentConfigured`; every participant route and `/mcp` refuse missing or unknown tokens with `401 INVALID_CREDENTIAL`; the observer API refuses a missing key (`401 INVALID_OBSERVER_SESSION`); CORS preflight is `204` for `https://agentmarketplace.pages.dev` and `403` for other origins; `/observer/ws` refuses a client without `OBSERVER_TOKEN` (`401`), and an authorised client received one log per call, named correctly and without credentials. The review fixes in this PR are not deployed: a stalled upload with no credentials got no answer for 20 s, because that revision has no upload deadline.
+
+Not verified: any authenticated hosted operation. Supabase has all three migrations, but no operator grants, participants, bot credentials, saved buyer card or observer key, so no hosted deal, payment, refusal or observer run view has been exercised.
 
 ## Dependencies and context upkeep
 

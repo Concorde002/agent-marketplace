@@ -1,6 +1,6 @@
 # Integration checkpoint and non-overlapping owner tasks
 
-Start from `origin/feat/live-marketplace-integration`, not an older main or the separate fixture sandbox. Record `git rev-parse HEAD` in your report. Use your own branch/worktree and preserve other owners' files. `docs/STATUS.md` still describes the older published baseline until the integrator records a reviewed main merge.
+After the approved integration merge, start from refreshed `origin/main`, not an older local main or the separate fixture sandbox. The feature checkpoint below is historical; current capabilities and remaining tasks are in `docs/STATUS.md`. Record `git rev-parse HEAD` in your report. Use your own branch/worktree and preserve other owners' files. `docs/STATUS.md` still describes the older published baseline until the integrator records a reviewed main merge.
 
 ## Observed checkpoint
 

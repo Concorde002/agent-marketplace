@@ -122,8 +122,9 @@ class RpcError extends Error {
  */
 export function createMcpHandler(
   backend: McpToolBackend,
-  options: { tools?: readonly McpToolDefinition[] } = {},
+  options: { tools?: readonly McpToolDefinition[]; instructions?: string } = {},
 ): (request: Request) => Promise<Response> {
+  const instructions = options.instructions ?? SERVER_INSTRUCTIONS;
   return async function handle(request: Request): Promise<Response> {
     if (request.method !== "POST") {
       return Response.json(
@@ -181,7 +182,7 @@ export function createMcpHandler(
     }
 
     try {
-      const result = await dispatch(backend, token, method, params, options.tools ?? MCP_TOOLS);
+      const result = await dispatch(backend, token, method, params, options.tools ?? MCP_TOOLS, instructions);
       return Response.json({ jsonrpc: "2.0", id, result });
     } catch (error) {
       if (error instanceof RpcError) {
@@ -198,10 +199,11 @@ async function dispatch(
   method: string,
   params: Record<string, unknown> | undefined,
   tools: readonly McpToolDefinition[],
+  instructions: string,
 ): Promise<unknown> {
   switch (method) {
     case "initialize":
-      return initializeResult(params);
+      return initializeResult(params, instructions);
     case "notifications/initialized":
       return {};
     case "ping":
@@ -260,7 +262,7 @@ async function callTool(
   }
 }
 
-function initializeResult(params: Record<string, unknown> | undefined): Record<string, unknown> {
+function initializeResult(params: Record<string, unknown> | undefined, instructions: string): Record<string, unknown> {
   const requested = params?.["protocolVersion"];
   if (requested !== undefined && typeof requested !== "string") {
     throw new RpcError(-32602, "initialize protocolVersion must be a string");
@@ -275,7 +277,7 @@ function initializeResult(params: Record<string, unknown> | undefined): Record<s
     protocolVersion,
     capabilities: { tools: { listChanged: false } },
     serverInfo: { name: "agent-marketplace-mcp", version: "0.1.0" },
-    instructions: SERVER_INSTRUCTIONS,
+    instructions,
   };
 }
 
