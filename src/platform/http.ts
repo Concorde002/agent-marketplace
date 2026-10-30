@@ -1,5 +1,6 @@
 import type { ActorContext } from "../contracts.js";
 import { PlatformClient } from "../agents/client.js";
+import { LIVE_AGENT_INSTRUCTIONS } from "../agents/instructions.js";
 import { createMcpBackend } from "../mcp/backend.js";
 import { createMcpHandler } from "../mcp/gateway.js";
 import { MCP_TOOLS, findTool, validateJsonSchema } from "../mcp/tools.js";
@@ -21,7 +22,7 @@ export function createPlatformHttp(db: Database, market: Marketplace, options: {
   const mcp = createMcpHandler(createMcpBackend({ clientForToken: (token) => new PlatformClient({
     baseUrl: "https://internal.marketplace", token, timeoutMs: 60_000, retry: { attempts: 1, baseDelayMs: 0 },
     fetchImpl: (input, init) => handle(new Request(input, init)),
-  }) }), { tools: supported });
+  }) }), { tools: supported, instructions: LIVE_AGENT_INSTRUCTIONS });
 
   async function handle(request: Request): Promise<Response> {
     let actor: ActorContext | undefined;

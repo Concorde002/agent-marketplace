@@ -72,6 +72,10 @@ Every owner opens small tested PRs and another teammate reviews them. Merge usab
 - Jenya clarified that the platform stays deterministic and client agents own semantic interpretation/model credits. Do not introduce a backend LLM provider. [Coordination issue #5](https://github.com/yauhenifutryn/agent-marketplace/issues/5) requests scoped source-bundle reads, agent assessment submission, selected buyer-source provenance and post-ranking participant resolution. Those shared changes belong to platform/agent owners.
 - [Agent PR #1 finding](https://github.com/yauhenifutryn/agent-marketplace/pull/1#issuecomment-6522540433): public organization IDs cannot be used as participant IDs. An unmapped public company must remain an external lead.
 
+## Final integrated verification
+
+The main-compatible tree including agent instructions passed `npm run check`: typecheck and **318 tests passed, 4 explicit TODOs, zero failures/cancellations**. Fresh read-only reviews returned ship for the source increment, inspected integration core, shared instructions and observer handoff. The core review also independently passed 25 identity/persistent-HTTP tests. The known Node upload-deadline/disconnect gap remains a backend follow-up. No hosted migration, named-client run, payment or deployment was performed in this continuation.
+
 ## Demo observer and agent instructions
 
 Jenya requested a three-minute observer UI handoff, not dashboard implementation. [Developer brief](../handoffs/2026-10-30-three-minute-demo.md) records the challenge deck requirements, proposed read-only projection, honest prior-run receipts, scope and acceptance, and an optional Jev assessment. The shared backend instructions describe the currently implemented client workflow; the new directory tools remain unmounted.

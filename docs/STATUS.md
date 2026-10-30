@@ -13,7 +13,7 @@ Updated 30 October 2026 for the reviewed integration merge. This describes sourc
 
 ## Evidence and limits
 
-The source-adapter revision passed typecheck and 316 fixture tests, with 4 explicit TODOs and no failures/cancellations. Four PR CI groups passed. Later instruction changes must record their own fresh result in the sourcing workstream. Fresh anonymous adapter reads returned current buyer notices and historical supplier leads; source receipts are in the supplier-data notes. An independent scoped adapter review found no blocker.
+The source-adapter revision passed typecheck and 316 fixture tests, with 4 explicit TODOs and no failures/cancellations. Four PR CI groups passed. The final main-compatible instruction revision passed typecheck and 318 tests, with 4 explicit TODOs and no failures/cancellations. Fresh scoped source/integration/instruction reviews returned ship; the documented ingress and hosted acceptance limitations remain. Fresh anonymous adapter reads returned current buyer notices and historical supplier leads; source receipts are in the supplier-data notes. An independent scoped adapter review found no blocker.
 
 Local PGlite/mocked-provider tests do not prove hosted migrations, real concurrent Postgres behavior, two actual bot sessions, or provider-confirmed sandbox settlement. Do not advertise `marketplaceReady: true` from these checks. There is no automatic startup migration or in-memory production fallback.
 

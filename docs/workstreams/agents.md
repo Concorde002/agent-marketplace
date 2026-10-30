@@ -101,6 +101,10 @@ API. Checked locally: `tests/agents/host.test.ts` covers the host, MCP over HTTP
 grant cap and refusal. A JSON-RPC client drove both bots over HTTP through to paid and refused
 outcomes. Not yet run with a live Grok Bot or Instinct account.
 
+## Backend-attached instructions, 30 October
+
+Shared live guide: `src/agents/instructions.ts`, served by `/agent.txt` and `/llms.txt` and included in authenticated live MCP initialization. It describes the actual 18-tool client workflow, registration/mandate limits, assessment pause, post-ranking resolution, supplier polling and authoritative sandbox payment reporting. The fixture gateway keeps its default safety instructions; unmounted TED award/BZP adapters are explicitly unavailable. Two new disposable guide tests pass; final full check: typecheck and 318 passed, 4 TODOs. No named-client or hosted payment proof is implied. [Observer developer handoff](../handoffs/2026-10-30-three-minute-demo.md) is instructions only.
+
 ## Gaps
 
 - No live Grok Bot account was available, so the vendor-documented custom-MCP path is documented and
