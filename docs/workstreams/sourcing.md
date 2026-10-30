@@ -68,4 +68,4 @@ TesterArmy e2e was researched from official docs as an optional independent-test
 
 Publication: [retrieval PR #3](https://github.com/yauhenifutryn/agent-marketplace/pull/3), [evidence-ranking PR #4](https://github.com/yauhenifutryn/agent-marketplace/pull/4), stacked on #3. Project-local permissions permit owned feature-branch publication while retaining main-push, merge, deployment and secret-access restrictions. A human teammate must review before merge. No merge or deployment is authorized or performed.
 
-The API-direct supplier research PR is pending, stacked on #4. Isolated custom direct-fetch work was stopped on Jenya's direction and is not part of this branch or the chosen production path.
+The API-direct supplier research is [PR #6](https://github.com/yauhenifutryn/agent-marketplace/pull/6), stacked on #4. Isolated custom direct-fetch work was stopped on Jenya's direction and is not part of this branch or the chosen production path.
