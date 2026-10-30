@@ -104,10 +104,10 @@ async function sign(body: string, timestamp: number, secret = WEBHOOK_SECRET) {
   return `t=${timestamp},v1=${Buffer.from(mac).toString("hex")}`;
 }
 
-function intentEvent(eventId: string, type: string, status: string, overrides: { pi?: string; orderId?: string; amount?: number; currency?: string } = {}) {
+function intentEvent(eventId: string, type: string, status: string, overrides: { pi?: string; orderId?: string; amount?: number; currency?: string; lastError?: { code?: string; decline_code?: string } } = {}) {
   return JSON.stringify({
     id: eventId, type,
-    data: { object: { id: overrides.pi ?? "pi_fixture_1", object: "payment_intent", status, amount: overrides.amount ?? 420_000, currency: overrides.currency ?? "eur", metadata: { order_id: overrides.orderId ?? "order-1", demo: "true" } } },
+    data: { object: { id: overrides.pi ?? "pi_fixture_1", object: "payment_intent", status, amount: overrides.amount ?? 420_000, currency: overrides.currency ?? "eur", metadata: { order_id: overrides.orderId ?? "order-1", demo: "true" }, last_payment_error: overrides.lastError ?? null } },
   });
 }
 
@@ -157,7 +157,9 @@ test("provider sends one confirmed off-session card PaymentIntent with an idempo
   assert.equal(params.get("payment_method"), "pm_fixture");
   assert.equal(params.get("off_session"), "true");
   assert.equal(params.get("confirm"), "true");
-  assert.equal(params.get("payment_method_types[]"), "card");
+  assert.equal(params.get("payment_method_types[]"), null, "rejected by current Stripe API versions");
+  assert.equal(params.get("automatic_payment_methods[enabled]"), "true");
+  assert.equal(params.get("automatic_payment_methods[allow_redirects]"), "never");
   assert.equal(params.get("metadata[order_id]"), "order-1");
 });
 
@@ -323,6 +325,23 @@ test("verified webhook moves a pending payment to succeeded once, even when deli
   assert.equal((await (await webhook(service, body)).json() as { result: string }).result, "duplicate");
   assert.equal(store.attempts.get("order-1")?.status, "succeeded");
   assert.deepEqual(store.emitted.map((e) => e.status), ["pending", "succeeded"]);
+});
+
+test("the payment_failed webhook for an off-session SCA demand keeps requires_action, not failed", async () => {
+  // Shape observed from the Stripe sandbox: status requires_payment_method with authentication_required.
+  const { store, service } = setup({ status: "requires_action", providerPaymentId: "pi_fixture_1" });
+  await service.settle(buyer, makeOrder(), mandate);
+  await webhook(service, intentEvent("evt_sca", "payment_intent.payment_failed", "requires_payment_method", { lastError: { code: "authentication_required", decline_code: "authentication_required" } }));
+  assert.equal(store.attempts.get("order-1")?.status, "requires_action");
+  assert.ok(!store.emitted.some((e) => e.status === "failed"));
+});
+
+test("the payment_failed webhook for a decline moves the payment to failed with its code", async () => {
+  const { store, service } = setup({ status: "pending", providerPaymentId: "pi_fixture_1" });
+  await service.settle(buyer, makeOrder(), mandate);
+  await webhook(service, intentEvent("evt_decline", "payment_intent.payment_failed", "requires_payment_method", { lastError: { code: "card_declined", decline_code: "generic_decline" } }));
+  assert.equal(store.attempts.get("order-1")?.status, "failed");
+  assert.equal(store.attempts.get("order-1")?.failureCode, "generic_decline");
 });
 
 test("a late non-terminal webhook cannot move a terminal payment backwards", async () => {

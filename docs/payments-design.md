@@ -1,7 +1,8 @@
 # Stripe settlement design, draft
 
 Status: the provider, webhook verification, settlement rules, and operator setup CLI exist in `src/payments/` with
-local tests. Persistence, the HTTP routes, and a sandbox rehearsal do not. See `docs/workstreams/platform.md`.
+local tests, and the provider plus CLI have run against a team Stripe sandbox. Persistence, the HTTP routes, and
+live webhook delivery do not exist yet. See `docs/workstreams/platform.md`.
 Owner: platform (`src/payments/`, per root `AGENTS.md`). Not yet reviewed by another teammate.
 
 This document records the intended payment model, the invariants to test, and the explicit upgrade path.
@@ -144,7 +145,9 @@ Four tables in `migrations/`:
    `maximumRunTotal`. On breach, refuse with no PaymentIntent created and no order state change.
 5. Insert the `payment_attempts` row. On unique conflict, read the existing row and return its state.
 6. Create the PaymentIntent with `Idempotency-Key: order:{orderId}:v1` and `amount`, `currency`, `customer`,
-   `payment_method`, `off_session=true`, `confirm=true`, `metadata[order_id]`, `metadata[demo]=true`.
+   `payment_method`, `off_session=true`, `confirm=true`, `automatic_payment_methods[enabled]=true`,
+   `automatic_payment_methods[allow_redirects]=never`, `metadata[order_id]`, `metadata[demo]=true`.
+   (`payment_method_types` is rejected by current Stripe API versions.)
 7. Map the outcome: success → `succeeded`; an `authentication_required` decline → `requires_action`; a
    `card_declined` → `failed`; still processing → `pending`.
 8. Emit one `payment_updated` participant event for the new status.
@@ -210,8 +213,9 @@ Operator setup is a separate CLI (`npm run payments:operator`), not an agent-cal
 Customer and saves a test card through a SetupIntent, then prints the credential record for server-side storage.
 Card scenarios: `visa` (`pm_card_visa`, off-session success), `decline` (`pm_card_chargeCustomerFail`, saves
 but every charge declines), and `auth-required` (`pm_card_authenticationRequiredOnSetup`, deliberately attached
-without setup so its off-session charge demands authentication). The last two are unverified against a live
-sandbox until rehearsed.
+without setup so its off-session charge demands authentication). All three behaved as described in the sandbox.
+Note that Stripe reports an off-session authentication demand as `requires_payment_method` with
+`last_payment_error.code = authentication_required`; the mapping treats that as `requires_action`, not a decline.
 
 ## 9. Sequencing and dependencies
 

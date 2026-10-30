@@ -13,7 +13,7 @@
     "test:sourcing": "npm run build && node --test dist/tests/sourcing/*.test.js",
     "test:e2e": "npm run build && node --test dist/tests/integration/*.test.js",
     "check": "npm run typecheck && npm test",
-    "payments:operator": "npm run build --silent && node --env-file=.dev.vars dist/src/payments/operator-cli.js"
+    "payments:operator": "npm run build --silent && node --env-file-if-exists=.env.local --env-file-if-exists=.dev.vars dist/src/payments/operator-cli.js"
   },
   "devDependencies": {
     "@types/node": "22.20.5",

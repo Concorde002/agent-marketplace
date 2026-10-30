@@ -74,6 +74,10 @@ export function mapPaymentIntent(intent: StripePaymentIntent): PaymentOutcome {
     case "requires_action": return { status: "requires_action", providerPaymentId: intent.id };
     case "requires_payment_method": {
       const error = intent.last_payment_error;
+      // Observed in the sandbox: an off-session SCA demand lands here, not in requires_action.
+      if (error?.code === "authentication_required" || error?.decline_code === "authentication_required") {
+        return { status: "requires_action", providerPaymentId: intent.id };
+      }
       return { status: "failed", providerPaymentId: intent.id, code: error?.decline_code ?? error?.code ?? "requires_payment_method" };
     }
     default:
@@ -101,8 +105,10 @@ export class StripeSandboxProvider implements PaymentProvider {
       currency,
       customer: input.customerRef,
       payment_method: input.paymentMethodRef,
-      // Card only: avoids redirect-based methods that would need a customer-facing return_url.
-      "payment_method_types[]": "card",
+      // Newer Stripe API versions reject payment_method_types. Redirect-based methods would need a
+      // customer-facing return_url, which a headless off-session charge never has.
+      "automatic_payment_methods[enabled]": true,
+      "automatic_payment_methods[allow_redirects]": "never",
       off_session: true,
       confirm: true,
       description: `Agent Marketplace demo order ${input.orderId} (sandbox, no real funds)`,

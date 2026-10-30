@@ -28,17 +28,17 @@ Stripe sandbox settlement exists as a library in `src/payments/`, not yet wired 
 - `SettlementService.settle`: buyer-only, amount taken from the accepted offer, per-order and expiry mandate checks, atomic run-total check, one attempt per order, emits one `payment_updated` event per status change.
 - `npm run payments:operator`: operator-only CLI that creates a demo Customer, saves a test card through a SetupIntent (`visa`, `decline`, or `auth-required` scenario), and runs a smoke charge.
 
-Missing: a D1 `PaymentStore` implementation and migrations (tests use an in-memory test double), the settle and webhook routes, authentication, and any run against a real Stripe sandbox. `MVP_LIMIT`: no supplier payout or Connect account; the test payment lands in the platform sandbox account only.
+Missing: a D1 `PaymentStore` implementation and migrations (tests use an in-memory test double), the settle and webhook routes, authentication, and a live webhook delivery. The provider and operator CLI have been run against a team Stripe sandbox (see Verification). `MVP_LIMIT`: no supplier payout or Connect account; the test payment lands in the platform sandbox account only.
 
 ## Next task
 
 Implement scoped participant registration and request creation with runtime validation and disposable storage tests. Coordinate request/offer read APIs with agent owner. Keep auth context server-derived and mandate limits bounded by operator grants. Then integrate sourcing and negotiation incrementally.
 
-Payments next: rehearse the operator CLI against a team Stripe sandbox (needs the keys below), then implement the D1 `PaymentStore` (`claimAttempt` as one guarded INSERT with UNIQUE(order_id)) and wire the settle and webhook routes once orders and authentication exist.
+Payments next: implement the D1 `PaymentStore` (`claimAttempt` as one guarded INSERT with UNIQUE(order_id)) and wire the settle and webhook routes once orders and authentication exist.
 
 ### Stripe sandbox configuration
 
-Put sandbox keys in `.dev.vars` (gitignored) as `STRIPE_SECRET_KEY=sk_test_…` and, once a webhook endpoint exists, `STRIPE_WEBHOOK_SECRET=whsec_…`. Never commit them, paste them into a bot prompt, or share them in chat. Then:
+Put sandbox keys in `.env.local` or `.dev.vars` (both gitignored) as `STRIPE_SECRET_KEY=sk_test_…` and, once a webhook endpoint exists, `STRIPE_WEBHOOK_SECRET=whsec_…`. Never commit them, paste them into a bot prompt, or share them in chat. Then:
 
 ```sh
 npm run payments:operator -- setup-buyer --participant <buyer-participant-id> --name "<demo buyer>" --card visa
@@ -51,9 +51,19 @@ The printed credential record belongs in server-side storage, not in Git.
 
 Run `npm run test:platform` and `npm run check`.
 
-Observed locally on branch `feature/stripe` (2026-10-30): `npm run check` typecheck passed; 36 tests, 28 pass, 0 fail, 8 pre-existing TODOs from other workstreams. `tests/platform/payments.test.ts` adds 23 tests against a recorded `fetch` and in-memory test doubles. Each of 14 guards (in-flight resume, terminal finality, buyer ownership, order ceiling, mandate expiry, webhook amount/PaymentIntent matching, deduplication, signature check and tolerance, `off_session`, SCA mapping, live-key refusal, secret redaction) was removed one at a time and a test failed each time. CLI error paths (missing key, live key, bad arguments) checked offline.
+Observed locally on branch `feature/stripe` (2026-10-30): `npm run check` typecheck passed; 38 tests, 30 pass, 0 fail, 8 pre-existing TODOs from other workstreams. `tests/platform/payments.test.ts` adds 25 tests against a recorded `fetch` and in-memory test doubles. Each of 14 guards (in-flight resume, terminal finality, buyer ownership, order ceiling, mandate expiry, webhook amount/PaymentIntent matching, deduplication, signature check and tolerance, `off_session`, SCA mapping, live-key refusal, secret redaction) was removed one at a time and a test failed each time. CLI error paths (missing key, live key, bad arguments) checked offline.
 
-Not verified: no request has reached Stripe. The sandbox card behaviors of the `decline` and `auth-required` scenarios are expected from Stripe's testing docs but unobserved. Local tests are not evidence of a live integration.
+Sandbox evidence (2026-10-30, team Stripe sandbox, operator CLI): for each card scenario, setup succeeded and one €10.00 off-session charge was made, then the PaymentIntent was read back independently from the Stripe API. All reported `livemode: false`.
+
+| Scenario | Provider result | Stripe's record |
+| --- | --- | --- |
+| `visa` | `succeeded` | `succeeded`, 1000 received |
+| `decline` | `failed`, `generic_decline` | `requires_payment_method`, `generic_decline`, 0 received |
+| `auth-required` | `requires_action` | `requires_payment_method`, `authentication_required`, 0 received |
+
+The sandbox run found two defects that local tests had missed, both fixed with tests: current Stripe API versions reject `payment_method_types` (now `automatic_payment_methods` with redirects disabled), and an off-session authentication demand arrives as `requires_payment_method` with `authentication_required`, which the webhook mapping had misread as a decline.
+
+Not verified: webhook delivery from Stripe (no hosted endpoint or `STRIPE_WEBHOOK_SECRET` yet), and settlement through stored orders and HTTP routes.
 
 ## Dependencies and context upkeep
 

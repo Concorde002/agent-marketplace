@@ -36,7 +36,8 @@ async function setupBuyer(client: StripeClient, participantId: string, name: str
     const setup = await client.postOk<{ id: string; status: string; payment_method: string | null }>("/setup_intents", {
       customer: customer.id,
       payment_method: scenario.paymentMethod,
-      "payment_method_types[]": "card",
+      "automatic_payment_methods[enabled]": true,
+      "automatic_payment_methods[allow_redirects]": "never",
       usage: "off_session",
       confirm: true,
       "metadata[participant_id]": participantId,
