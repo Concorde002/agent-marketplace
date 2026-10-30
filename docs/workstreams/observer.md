@@ -36,7 +36,6 @@ and dark, disconnected state, new-run banner, refused run. Evidence class: local
    query CPV in the evidence bundle (`cpvCodes`) when the structured directory is mounted.
 4. No hosted timing or three-minute rehearsal with both actual bot clients yet.
 5. `docs/STATUS.md` still says the dashboard is not implemented; the integrator updates it after merge.
-
 6. TED/BZP directory tools and exact identifier resolution are not exposed yet (backend and bot
    owners). The observer contract they need is in the runbook; the page will not simulate them.
 
