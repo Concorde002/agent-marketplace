@@ -22,9 +22,8 @@ import {
 } from "../../src/agents/config.js";
 import {
   buildBuyerCounterOffer,
-  splitDeliveredTotal,
 } from "../../src/agents/negotiation.js";
-import { supplierInitialAskAmount } from "../../src/agents/policy.js";
+import { supplierCounterAmount, supplierInitialAskAmount } from "../../src/agents/policy.js";
 import { MemoryAgentStateStore } from "../../src/agents/store.js";
 import type { AgentClock, SleepFn } from "../../src/agents/types.js";
 import {
@@ -80,8 +79,21 @@ class TestSupplier {
           await this.client.acceptOffer(buyerOffer.id);
         } else {
           const request = await this.client.getRequest(event.requestId);
+          const previous =
+            buyerOffer.previousOfferId === undefined
+              ? undefined
+              : await this.client.getOffer(buyerOffer.previousOfferId);
+          // Mirrors the real listener's split-the-difference reply.
+          const amount = supplierCounterAmount({
+            minimumDeliveredTotalMinor: this.minTotalMinor,
+            buyerBidMinor: buyerOffer.deliveredTotal.amountMinor,
+            buyerBudgetMinor: request.maximumDeliveredTotal.amountMinor,
+            ...(previous === undefined
+              ? {}
+              : { previousAskMinor: previous.deliveredTotal.amountMinor }),
+          });
           await this.client.submitOffer(
-            this.buildOffer(request, this.minTotalMinor, buyerOffer.id),
+            this.buildOffer(request, amount, buyerOffer.id),
           );
         }
       }
@@ -93,7 +105,6 @@ class TestSupplier {
     amountMinor: number,
     previousOfferId?: string,
   ): Omit<Offer, "id"> {
-    const split = splitDeliveredTotal(amountMinor);
     return {
       requestId: request.id,
       buyerId: request.buyerId,
@@ -103,8 +114,8 @@ class TestSupplier {
       unit: request.unit,
       destination: request.destination,
       deliveredTotal: { amountMinor, currency: this.currency },
-      taxMinor: split.taxMinor,
-      deliveryMinor: split.deliveryMinor,
+      taxMinor: 0,
+      deliveryMinor: 0,
       deliveryAt: futureIso(10),
       expiresAt: futureIso(7),
       confirmedRequirementKeys: request.requirements
@@ -427,7 +438,8 @@ test("supplier floor above the buyer maximum ends in no match without payment", 
     assert.equal(platform.state.paymentAttempts.size, 0);
     assert.deepEqual(
       platform.getOffers().map((offer) => offer.deliveredTotal.amountMinor),
-      [550_000, 200_000, 500_000],
+      // Ask, buyer's opening counter 10% below its budget, supplier's floor.
+      [550_000, 180_000, 500_000],
     );
   } finally {
     await platform.close();
@@ -547,7 +559,8 @@ test("untrusted candidate text cannot raise limits or redirect settlement", asyn
 
     const outcome = requirePaid(await harness.runner.run());
 
-    assert.equal(outcome.order.acceptedOffer.deliveredTotal.amountMinor, 200_000);
+    // Buyer opened 10% below its 200000 budget; the supplier accepted above its floor.
+    assert.equal(outcome.order.acceptedOffer.deliveredTotal.amountMinor, 180_000);
     assert.ok(outcome.order.acceptedOffer.deliveredTotal.amountMinor <= 200_000);
     assert.equal(platform.getOrders().length, 1);
     assert.equal(platform.state.paymentAttempts.get(outcome.order.id), 1);
@@ -595,7 +608,7 @@ test("buyer events are isolated and another buyer cannot accept the offer", asyn
       token: otherBuyerToken,
     });
     await otherBuyer.registerParticipant(defaultBuyerRegistration("buyer2.example"));
-    const offer = platform.getOffers()[0];
+    const offer = platform.getOffers().at(-1);
     assert.ok(offer !== undefined);
     await assert.rejects(
       () => otherBuyer.acceptOffer(offer.id),
@@ -640,7 +653,8 @@ test("supplier private floor never appears in a buyer-visible payload", async ()
       discoveryPayloads,
     });
 
-    assert.equal(outcome.order.acceptedOffer.deliveredTotal.amountMinor, 165_000);
+    // 165000 ask, 148500 counter, supplier splits the difference: the floor stays private.
+    assert.equal(outcome.order.acceptedOffer.deliveredTotal.amountMinor, 156_750);
     assert.equal(serialized.includes("150000"), false);
     assert.equal(serialized.includes("150_000"), false);
     assert.equal(serialized.includes("minimumDeliveredTotal"), false);
@@ -742,17 +756,15 @@ test("buyer counteroffer keeps terms, chains the previous offer and splits the t
   });
 
   assert.equal(counter.deliveredTotal.amountMinor, 200_000);
-  assert.equal(counter.taxMinor + counter.deliveryMinor, 200_000);
+  // Demo terms carry no invented tax/delivery split.
+  assert.equal(counter.taxMinor, 0);
+  assert.equal(counter.deliveryMinor, 0);
   assert.equal(counter.previousOfferId, previous.id);
   assert.equal(counter.termsOrigin, "demo-supplier-declaration");
   assert.equal(counter.quantity, request.quantity);
   assert.equal(counter.unit, request.unit);
   assert.equal(counter.destination, request.destination);
   assert.deepEqual(counter.confirmedRequirementKeys, ["iso-9001"]);
-  assert.deepEqual(splitDeliveredTotal(200_000), {
-    taxMinor: 33_333,
-    deliveryMinor: 166_667,
-  });
 });
 
 test("buyer uses a memory store for cursors and event dedupe", async () => {

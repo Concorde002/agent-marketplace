@@ -131,12 +131,16 @@ test("a succeeded payment without a sandbox reference is never reported as paid"
   assert.equal(log.messages.length, 0);
 });
 
-test("pending and requires_action stay unreported until the reporting deadline", async () => {
-  for (const paymentStatus of [
-    "not_started",
-    "pending",
-    "requires_action",
-  ] as const) {
+test("requires_action is reported at once as a failed payment needing action", () => {
+  const decision = buildReport(demoOrder({ paymentStatus: "requires_action" }));
+  assert.ok(decision.report);
+  assert.equal(decision.outcome, "payment_failed");
+  assert.match(decision.message, /^payment failed — payment requires further action/);
+  assert.ok(!decision.message.includes(REPORT_PAID_PREFIX));
+});
+
+test("not_started and pending stay unreported until the reporting deadline", async () => {
+  for (const paymentStatus of ["not_started", "pending"] as const) {
     const order = demoOrder({ paymentStatus });
     assert.deepEqual(buildReport(order), {
       report: false,
@@ -163,7 +167,7 @@ test("pending and requires_action stay unreported until the reporting deadline",
     assert.ok(late.report);
     assert.equal(late.outcome, "payment_failed");
     assert.ok(late.message.startsWith(REPORT_PAYMENT_FAILED_PREFIX));
-    assert.match(late.message, /requires further action/);
+    assert.match(late.message, new RegExp(`still ${paymentStatus} after the reporting window`));
     assert.ok(!late.message.includes(REPORT_PAID_PREFIX));
   }
 });

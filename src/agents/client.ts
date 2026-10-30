@@ -36,14 +36,25 @@ export class PlatformClientError extends Error {
   readonly code: string;
   readonly status: number;
   readonly idempotencyKey?: string;
+  /** Existing participant id returned with ALREADY_REGISTERED, when the platform supplies it. */
+  readonly participantId?: string;
 
-  constructor(code: string, status: number, message: string, idempotencyKey?: string) {
+  constructor(
+    code: string,
+    status: number,
+    message: string,
+    idempotencyKey?: string,
+    participantId?: string,
+  ) {
     super(message);
     this.name = "PlatformClientError";
     this.code = code;
     this.status = status;
     if (idempotencyKey !== undefined) {
       this.idempotencyKey = idempotencyKey;
+    }
+    if (participantId !== undefined) {
+      this.participantId = participantId;
     }
   }
 }
@@ -237,6 +248,7 @@ export class PlatformClient {
     const text = await this.safeRead(response, method, path, idempotencyKey);
     let code = `HTTP_${response.status}`;
     let detail: string | undefined;
+    let participantId: string | undefined;
     if (text.trim() !== "") {
       try {
         const payload: unknown = JSON.parse(text);
@@ -246,6 +258,9 @@ export class PlatformClient {
           }
           if (typeof payload.message === "string" && payload.message.length > 0) {
             detail = payload.message;
+          }
+          if (typeof payload.participantId === "string" && payload.participantId.length > 0) {
+            participantId = payload.participantId;
           }
         }
       } catch {
@@ -258,6 +273,7 @@ export class PlatformClient {
       response.status,
       this.redact(`${method} ${path} failed with ${response.status}${suffix}`),
       idempotencyKey,
+      participantId,
     );
   }
 
@@ -355,6 +371,11 @@ function nonNegativeInteger(value: number, field: string): number {
     throw new PlatformClientError("INVALID_CONFIGURATION", 0, `${field} must be a non-negative integer`);
   }
   return value;
+}
+
+/** Short stable hash of a JSON-serialisable value, for idempotency keys. */
+export function stableHash(value: unknown): string {
+  return fnv1a(JSON.stringify(value));
 }
 
 /** Deterministic per-logical-mutation key: retries and restarts reuse it. */

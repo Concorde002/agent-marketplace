@@ -4,6 +4,7 @@ import { test } from "node:test";
 import type { Offer } from "../../src/contracts.js";
 import {
   buyerCounterAmount,
+  supplierCounterAmount,
   canSubmitRevision,
   checkBuyerOffer,
   checkSupplierOffer,
@@ -226,15 +227,50 @@ test("supplier initial ask is ceil(minimum * 1.10) in integer minor units", () =
   assert.throws(() => supplierInitialAskAmount(1.5), RangeError);
 });
 
-test("buyer counter is the midpoint rounded up and clamped to the maximum", () => {
-  assert.equal(buyerCounterAmount(800, 1000), 900);
-  assert.equal(buyerCounterAmount(801, 1000), 901);
-  assert.equal(buyerCounterAmount(1000, 1000), 1000);
-  assert.equal(buyerCounterAmount(1100, 1000), 1000);
-  assert.equal(buyerCounterAmount(1300, 1200), 1200);
-  assert.equal(buyerCounterAmount(0, 1000), 500);
+test("buyer counter opens 10% below the lower of ask and budget, never at the budget", () => {
+  assert.equal(buyerCounterAmount(800, 1000), 720);
+  assert.equal(buyerCounterAmount(801, 1000), 720);
+  assert.equal(buyerCounterAmount(1000, 1000), 900);
+  assert.equal(buyerCounterAmount(1100, 1000), 900);
+  assert.equal(buyerCounterAmount(1300, 1200), 1080);
+  assert.equal(buyerCounterAmount(0, 1000), 0);
   assert.throws(() => buyerCounterAmount(-1, 1000), RangeError);
   assert.throws(() => buyerCounterAmount(1000, 1.5), RangeError);
+});
+
+test("supplier counter splits the difference, never below the floor or above a feasible budget", () => {
+  // Ask 484000, bid 435600, floor 440000: meet halfway.
+  assert.equal(
+    supplierCounterAmount({ minimumDeliveredTotalMinor: 440_000, buyerBidMinor: 435_600, previousAskMinor: 484_000 }),
+    459_800,
+  );
+  // Halfway is under the floor: hold the floor.
+  assert.equal(
+    supplierCounterAmount({ minimumDeliveredTotalMinor: 500_000, buyerBidMinor: 180_000, previousAskMinor: 550_000 }),
+    500_000,
+  );
+  // A stated budget between floor and halfway caps the reply so the deal is not lost.
+  assert.equal(
+    supplierCounterAmount({
+      minimumDeliveredTotalMinor: 440_000,
+      buyerBidMinor: 420_000,
+      previousAskMinor: 484_000,
+      buyerBudgetMinor: 445_000,
+    }),
+    445_000,
+  );
+  // A budget below the floor never pulls the reply under the floor.
+  assert.equal(
+    supplierCounterAmount({
+      minimumDeliveredTotalMinor: 440_000,
+      buyerBidMinor: 300_000,
+      previousAskMinor: 484_000,
+      buyerBudgetMinor: 400_000,
+    }),
+    440_000,
+  );
+  // No previous ask known: the floor.
+  assert.equal(supplierCounterAmount({ minimumDeliveredTotalMinor: 440_000, buyerBidMinor: 1 }), 440_000);
 });
 
 test("negotiation limits default to the hard ceilings and cannot be raised", () => {
@@ -289,13 +325,20 @@ test("recording revisions stops at the configured cap", () => {
   assert.equal(state.startedAtMs, NOW);
 });
 
-test("buyer accepts a valid offer and counters an over-budget ask deterministically", () => {
-  const state = createNegotiationState(NOW);
+test("buyer opens below an affordable ask, accepts it when no reply fits, and counters an over-budget ask", () => {
+  // The supplier's first ask is revision 1; a counter (2) and a reply (3) still fit.
+  const opening = { revisions: 1, startedAtMs: NOW };
+  assert.deepEqual(
+    decideBuyerOffer({ offer: makeOffer(), policy: buyerPolicy(), state: opening, nowMs: NOW }),
+    { kind: "counter", amountMinor: 990, reasons: [] },
+  );
+
+  // The supplier's reply is revision 3: nothing left to counter, so accept a valid offer.
   assert.deepEqual(
     decideBuyerOffer({
       offer: makeOffer(),
       policy: buyerPolicy(),
-      state,
+      state: { revisions: 3, startedAtMs: NOW },
       nowMs: NOW,
     }),
     { kind: "accept" },
@@ -304,10 +347,23 @@ test("buyer accepts a valid offer and counters an over-budget ask deterministica
   const decision = decideBuyerOffer({
     offer: makeOffer({ deliveredTotal: { amountMinor: 1300, currency: "EUR" } }),
     policy: buyerPolicy(),
-    state,
+    state: opening,
     nowMs: NOW,
   });
   assert.deepEqual(decision, {
+    kind: "counter",
+    amountMinor: 1080,
+    reasons: ["order_total_exceeded"],
+  });
+
+  // Exactly one revision left: the final counter is the full ceiling.
+  const final = decideBuyerOffer({
+    offer: makeOffer({ deliveredTotal: { amountMinor: 1300, currency: "EUR" } }),
+    policy: buyerPolicy(),
+    state: { revisions: 2, startedAtMs: NOW },
+    nowMs: NOW,
+  });
+  assert.deepEqual(final, {
     kind: "counter",
     amountMinor: 1200,
     reasons: ["order_total_exceeded"],
@@ -510,7 +566,7 @@ test("buyer counters only when every failed check is a price reason", () => {
   });
   assert.deepEqual(overBudget, {
     kind: "counter",
-    amountMinor: 1200,
+    amountMinor: 1080,
     reasons: ["order_total_exceeded"],
   });
 
@@ -522,7 +578,7 @@ test("buyer counters only when every failed check is a price reason", () => {
   });
   assert.deepEqual(overRun, {
     kind: "counter",
-    amountMinor: 1051,
+    amountMinor: 810,
     reasons: ["run_total_exceeded"],
   });
 
@@ -534,7 +590,7 @@ test("buyer counters only when every failed check is a price reason", () => {
   });
   assert.deepEqual(bothPriceReasons, {
     kind: "counter",
-    amountMinor: 1200,
+    amountMinor: 900,
     reasons: ["order_total_exceeded", "run_total_exceeded"],
   });
 });

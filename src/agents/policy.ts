@@ -117,6 +117,10 @@ export interface SupplierDecisionInput {
   /** Omit for the supplier's first response to a quote request. */
   offer?: Offer;
   limits?: NegotiationLimitsInput;
+  /** The supplier's own previous ask in this chain, when known. */
+  previousAskMinor?: number;
+  /** The buyer's stated maximum on the request, when known. */
+  buyerBudgetMinor?: number;
 }
 
 function isSafeMinor(value: number): boolean {
@@ -276,8 +280,13 @@ export function supplierInitialAskAmount(
   return Math.floor((scaled + 9) / 10);
 }
 
+/** Buyer's single counteroffer sits this many percent below the lower of ask and budget. */
+export const BUYER_COUNTER_DISCOUNT_PERCENT = 10;
+
 /**
- * Buyer counter: ceil((ask + maximum) / 2), clamped to the maximum order total.
+ * Buyer counter: floor(min(ask, maximum) * 0.9). It never exceeds the buyer's
+ * maximum and never reveals it: a counter at exactly the budget would tell the
+ * supplier the buyer's ceiling.
  */
 export function buyerCounterAmount(
   askMinor: number,
@@ -286,11 +295,46 @@ export function buyerCounterAmount(
   if (!isSafeMinor(askMinor) || !isSafeMinor(maximumOrderTotalMinor)) {
     throw new RangeError("amounts must be non-negative safe integers");
   }
-  const sum = askMinor + maximumOrderTotalMinor;
-  if (!Number.isSafeInteger(sum)) {
+  const anchor = Math.min(askMinor, maximumOrderTotalMinor);
+  const scaled = anchor * (100 - BUYER_COUNTER_DISCOUNT_PERCENT);
+  if (!Number.isSafeInteger(scaled)) {
     throw new RangeError("counter amount exceeds the safe integer range");
   }
-  return Math.min(Math.ceil(sum / 2), maximumOrderTotalMinor);
+  return Math.floor(scaled / 100);
+}
+
+/**
+ * Supplier reply to a buyer bid below its floor: split the difference between
+ * its previous ask and the bid, never below the floor. When the request states
+ * a buyer budget at or above the floor, the reply is capped at that budget so a
+ * feasible deal is never lost by asking above it.
+ */
+export function supplierCounterAmount(input: {
+  minimumDeliveredTotalMinor: number;
+  buyerBidMinor: number;
+  previousAskMinor?: number;
+  buyerBudgetMinor?: number;
+}): number {
+  const floor = input.minimumDeliveredTotalMinor;
+  if (!isSafeMinor(floor) || !isSafeMinor(input.buyerBidMinor)) {
+    throw new RangeError("amounts must be non-negative safe integers");
+  }
+  let amount = floor;
+  if (input.previousAskMinor !== undefined && isSafeMinor(input.previousAskMinor)) {
+    const sum = input.previousAskMinor + input.buyerBidMinor;
+    if (!Number.isSafeInteger(sum)) {
+      throw new RangeError("counter amount exceeds the safe integer range");
+    }
+    amount = Math.max(floor, Math.ceil(sum / 2));
+  }
+  if (
+    input.buyerBudgetMinor !== undefined &&
+    isSafeMinor(input.buyerBudgetMinor) &&
+    input.buyerBudgetMinor >= floor
+  ) {
+    amount = Math.min(amount, input.buyerBudgetMinor);
+  }
+  return amount;
 }
 
 function clampPositiveInteger(
@@ -370,21 +414,33 @@ export function recordOfferRevision(
   };
 }
 
+/** True when a counter and the counterparty's reply both still fit in the revision cap. */
+function roomForCounter(
+  state: NegotiationState,
+  limits: NegotiationLimitsInput | undefined,
+  nowMs: number,
+): boolean {
+  const effective = resolveNegotiationLimits(limits);
+  return (
+    negotiationStatus(state, limits, nowMs).open &&
+    state.revisions + 2 <= effective.maxRevisions
+  );
+}
+
 /**
- * Buyer action for an incoming supplier offer. Accept only when every buyer
- * check passes; otherwise counter deterministically while revisions remain.
+ * Buyer action for an incoming supplier offer. `state.revisions` already
+ * includes this offer. While a counter and the supplier's reply still fit in
+ * the revision cap, the buyer opens 10% below the ask (even an affordable one).
+ * Otherwise it accepts an offer that passes every check; with exactly one
+ * revision left it makes a final counter at its ceiling; else it refuses.
  */
 export function decideBuyerOffer(input: BuyerDecisionInput): BuyerOfferDecision {
   const check = checkBuyerOffer(input.offer, input.policy, input.nowMs);
   const status = negotiationStatus(input.state, input.limits, input.nowMs);
 
-  if (check.ok) {
-    if (status.open || status.reason === "revision_limit") {
-      return { kind: "accept" };
-    }
-    return { kind: "refuse", reasons: ["deadline_exceeded"] };
+  if (status.reason === "deadline_exceeded") {
+    return { kind: "refuse", reasons: [...check.reasons, "deadline_exceeded"] };
   }
-
   if (check.reasons.includes("invalid_offer")) {
     return { kind: "refuse", reasons: check.reasons };
   }
@@ -404,27 +460,38 @@ export function decideBuyerOffer(input: BuyerDecisionInput): BuyerOfferDecision 
     return { kind: "refuse", reasons };
   }
 
-  if (status.open) {
-    return {
-      kind: "counter",
-      amountMinor: buyerCounterAmount(
-        input.offer.deliveredTotal.amountMinor,
-        input.policy.maximumOrderTotalMinor,
-      ),
-      reasons: check.reasons,
-    };
+  const ceiling = Math.min(
+    input.policy.maximumOrderTotalMinor,
+    input.policy.remainingRunTotalMinor,
+  );
+  const ask = input.offer.deliveredTotal.amountMinor;
+
+  // Room for a counter and the supplier's reply: open below the ask.
+  if (roomForCounter(input.state, input.limits, input.nowMs)) {
+    const amountMinor = buyerCounterAmount(ask, ceiling);
+    if (amountMinor < ask) {
+      return { kind: "counter", amountMinor, reasons: check.reasons };
+    }
+  }
+
+  if (check.ok) {
+    return { kind: "accept" };
+  }
+
+  // Exactly one revision left: the counter is final, so make the best permitted offer.
+  if (status.open && ceiling < ask) {
+    return { kind: "counter", amountMinor: ceiling, reasons: check.reasons };
   }
 
   const reasons: PolicyRefusalReason[] = [...check.reasons];
-  if (status.reason !== undefined) {
-    reasons.push(status.reason);
-  }
+  reasons.push(status.reason ?? "revision_limit");
   return { kind: "refuse", reasons };
 }
 
 /**
  * Supplier action for a buyer counteroffer, or the first ask when no offer is
- * supplied. Never offers below the minimum; later asks settle at the minimum.
+ * supplied. Accepts a bid at or above the floor; otherwise splits the
+ * difference while revisions remain. Never offers below the floor.
  */
 export function decideSupplierOffer(
   input: SupplierDecisionInput,
@@ -465,7 +532,16 @@ export function decideSupplierOffer(
   if (status.open) {
     return {
       kind: "offer",
-      amountMinor: input.policy.minimumDeliveredTotalMinor,
+      amountMinor: supplierCounterAmount({
+        minimumDeliveredTotalMinor: input.policy.minimumDeliveredTotalMinor,
+        buyerBidMinor: input.offer.deliveredTotal.amountMinor,
+        ...(input.previousAskMinor === undefined
+          ? {}
+          : { previousAskMinor: input.previousAskMinor }),
+        ...(input.buyerBudgetMinor === undefined
+          ? {}
+          : { buyerBudgetMinor: input.buyerBudgetMinor }),
+      }),
       reasons: check.reasons,
     };
   }

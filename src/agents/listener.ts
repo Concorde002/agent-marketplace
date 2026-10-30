@@ -6,7 +6,7 @@ import type {
   SourcingRequest,
 } from "../contracts.js";
 import { PlatformClient, PlatformClientError } from "./client.js";
-import type { SupplierAgentConfig } from "./config.js";
+import { DEFAULT_PAYMENT_WAIT_MS, type SupplierAgentConfig } from "./config.js";
 import {
   decideSupplierOffer,
   type NegotiationLimits,
@@ -23,7 +23,15 @@ import type { AgentClock, AgentError, AgentLogger, SleepFn } from "./types.js";
 const DECLINE_KEY_PREFIX = "decline:";
 const NEGOTIATION_KEY_PREFIX = "negotiation:";
 const EVENT_SEEN_PREFIX = "event:";
+const ATTEMPTS_KEY_PREFIX = "attempts:";
+const AWAITING_PAYMENT_KEY = "awaiting-payment";
 const MAX_CHAIN_WALK = 20;
+/** A rejected (4xx) event is retried this many times, then skipped so it cannot block the cursor. */
+export const MAX_REJECTED_EVENT_ATTEMPTS = 3;
+/** Any failing event is skipped after this many attempts. */
+export const MAX_EVENT_ATTEMPTS = 10;
+/** Bound on agreed orders the listener keeps re-reading while payment is pending. */
+const MAX_AWAITING_ORDERS = 20;
 const DEFAULT_SLEEP: SleepFn = (ms) =>
   new Promise((resolve) => {
     const timer = setTimeout(resolve, ms);
@@ -185,12 +193,43 @@ function isAborted(signal: AbortSignal | undefined): boolean {
   return signal !== undefined && signal.aborted;
 }
 
-/** The platform may reserve settlement for the buyer; that is not a listener failure. */
-function isSettlementNotPermitted(error: unknown): boolean {
-  if (!(error instanceof PlatformClientError)) {
-    return false;
+interface AwaitingOrder {
+  orderId: string;
+  agreedAtMs: number;
+}
+
+function parseAwaiting(raw: string | undefined): AwaitingOrder[] {
+  if (raw === undefined) {
+    return [];
   }
-  return error.status === 403 || error.code === "FORBIDDEN" || error.code === "NOT_AUTHORIZED";
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed.flatMap((entry: unknown) => {
+      if (typeof entry !== "object" || entry === null) {
+        return [];
+      }
+      const record = entry as Record<string, unknown>;
+      return typeof record.orderId === "string" && typeof record.agreedAtMs === "number"
+        ? [{ orderId: record.orderId, agreedAtMs: record.agreedAtMs }]
+        : [];
+    });
+  } catch {
+    return [];
+  }
+}
+
+/** 4xx other than 408/429: retrying the same call cannot succeed. */
+function isRejected(error: unknown): boolean {
+  return (
+    error instanceof PlatformClientError &&
+    error.status >= 400 &&
+    error.status < 500 &&
+    error.status !== 408 &&
+    error.status !== 429
+  );
 }
 
 /**
@@ -259,6 +298,9 @@ export class SupplierListener {
 
     await this.persistIdentity();
 
+    // Messages whose chat delivery failed earlier get another chance first.
+    result.reports.push(...(await this.reporter.retryPendingReports()));
+
     let page: EventPage;
     try {
       page = await this.client.listEvents(stored);
@@ -313,22 +355,39 @@ export class SupplierListener {
           result.declined.push(outcome.decline);
         }
       } catch (error) {
-        blocked = true;
         const agentError = toAgentError(error);
         result.lastError = agentError;
+        const attempts = await this.recordAttempt(event.id);
+        const giveUp =
+          attempts >= MAX_EVENT_ATTEMPTS ||
+          (isRejected(error) && attempts >= MAX_REJECTED_EVENT_ATTEMPTS);
         result.failed.push({
           eventId: event.id,
           eventType: event.type,
           status: "failed",
-          reason: agentError.code,
+          reason: giveUp ? `${agentError.code}:skipped_after_${attempts}_attempts` : agentError.code,
         });
         this.logger.error?.("event handling failed", {
           eventId: event.id,
           eventType: event.type,
           code: agentError.code,
+          attempts,
+          skipped: giveUp,
         });
+        if (giveUp) {
+          // A permanently failing event must not hold the cursor and starve later events.
+          await this.store.markSeen(seenKey(event.id));
+          if (!blocked) {
+            cursor = event.cursor;
+            await this.store.setCursor(event.cursor);
+          }
+        } else {
+          blocked = true;
+        }
       }
     }
+
+    await this.checkAwaitingPayments(result);
 
     if (!blocked && events.length > 0) {
       cursor = page.nextCursor;
@@ -504,16 +563,24 @@ export class SupplierListener {
         this.participantId = offer.supplierId;
       }
       const nowMs = this.now();
-      const priorOffers = await this.countPriorOffers(offer);
+      const chain = await this.walkChain(offer);
       const startedAtMs =
         (await this.negotiationStart(event.requestId)) ?? nowMs;
+      const request = await this.client.getRequest(offer.requestId);
+      const budget = request.maximumDeliveredTotal;
 
       const decision = decideSupplierOffer({
         policy: this.supplierPolicy(),
-        state: { revisions: priorOffers, startedAtMs },
+        state: { revisions: chain.priorOffers, startedAtMs },
         nowMs,
         limits: this.limits(),
         offer,
+        ...(chain.previousAmountMinor === undefined
+          ? {}
+          : { previousAskMinor: chain.previousAmountMinor }),
+        ...(budget.currency === offer.deliveredTotal.currency
+          ? { buyerBudgetMinor: budget.amountMinor }
+          : {}),
       });
 
       if (decision.kind === "accept") {
@@ -555,28 +622,18 @@ export class SupplierListener {
     }
   }
 
+  /**
+   * Settlement is the buyer's action; the supplier never initiates or retries a
+   * charge. It reads the authoritative order, reports a terminal payment, and
+   * otherwise keeps the order on its awaiting list until payment resolves.
+   */
   private async handleAgreementCreated(
     event: ParticipantEvent,
   ): Promise<HandlingOutcome> {
     const orderId = event.resourceId;
-    try {
-      await this.client.settleOrder(orderId, {
-        idempotencyKey: `listener:${event.id}:settle`,
-      });
-    } catch (error) {
-      // Settlement is the payer's action. If the platform only authorizes the buyer, the
-      // supplier still reports from authoritative order state instead of failing the event.
-      if (!isSettlementNotPermitted(error)) {
-        throw error;
-      }
-      this.logger.info?.("supplier cannot initiate settlement; reading order state", {
-        orderId,
-      });
-    }
-
     const order = await this.client.getOrder(orderId);
-    if (order.paymentStatus !== "succeeded" && order.paymentStatus !== "failed") {
-      // The buyer settles; the matching payment_updated event reports the terminal result.
+    if (!isTerminalPayment(order)) {
+      await this.addAwaiting(orderId);
       return {
         status: "skipped",
         reason: `awaiting_payment:${order.paymentStatus}`,
@@ -588,7 +645,7 @@ export class SupplierListener {
     });
     return {
       status: "handled",
-      reason: `settled:${order.paymentStatus}`,
+      reason: `payment:${order.paymentStatus}`,
       ...(report.reported ? { report: report.message } : {}),
     };
   }
@@ -597,12 +654,14 @@ export class SupplierListener {
     event: ParticipantEvent,
   ): Promise<HandlingOutcome> {
     const order = await this.client.getOrder(event.resourceId);
-    if (order.paymentStatus !== "succeeded" && order.paymentStatus !== "failed") {
+    if (!isTerminalPayment(order)) {
+      await this.addAwaiting(order.id);
       return {
         status: "skipped",
         reason: `non_terminal_payment:${order.paymentStatus}`,
       };
     }
+    await this.removeAwaiting(order.id);
     const report = await this.reporter.reportOrder(order, {
       eventId: event.id,
       nowMs: this.now(),
@@ -702,6 +761,7 @@ export class SupplierListener {
         amountMinor,
         currency: request.maximumDeliveredTotal.currency,
       },
+      // MVP_LIMIT: demo terms carry no separate tax or delivery component.
       taxMinor: 0,
       deliveryMinor: 0,
       deliveryAt: this.config.supplier.earliestDeliveryAt,
@@ -740,9 +800,13 @@ export class SupplierListener {
     };
   }
 
-  private async countPriorOffers(offer: Offer): Promise<number> {
+  /** Count earlier revisions in this chain and read the immediately previous amount. */
+  private async walkChain(
+    offer: Offer,
+  ): Promise<{ priorOffers: number; previousAmountMinor?: number }> {
     let length = 1;
     let previousId = offer.previousOfferId;
+    let previousAmountMinor: number | undefined;
     const visited = new Set<string>([offer.id]);
     let guard = 0;
     while (
@@ -753,10 +817,83 @@ export class SupplierListener {
       visited.add(previousId);
       guard += 1;
       const previous = await this.client.getOffer(previousId);
+      if (previousAmountMinor === undefined) {
+        previousAmountMinor = previous.deliveredTotal.amountMinor;
+      }
       length += 1;
       previousId = previous.previousOfferId;
     }
-    return Math.max(0, length - 1);
+    return {
+      priorOffers: Math.max(0, length - 1),
+      ...(previousAmountMinor === undefined ? {} : { previousAmountMinor }),
+    };
+  }
+
+  private async recordAttempt(eventId: string): Promise<number> {
+    const key = `${ATTEMPTS_KEY_PREFIX}${eventId}`;
+    const previous = Number(await this.store.getReport(key));
+    const attempts = (Number.isSafeInteger(previous) ? previous : 0) + 1;
+    await this.store.putReport(key, String(attempts));
+    return attempts;
+  }
+
+  private async readAwaiting(): Promise<AwaitingOrder[]> {
+    return parseAwaiting(await this.store.getReport(AWAITING_PAYMENT_KEY));
+  }
+
+  private async addAwaiting(orderId: string): Promise<void> {
+    const awaiting = await this.readAwaiting();
+    if (awaiting.some((entry) => entry.orderId === orderId)) {
+      return;
+    }
+    awaiting.push({ orderId, agreedAtMs: this.now() });
+    await this.store.putReport(
+      AWAITING_PAYMENT_KEY,
+      JSON.stringify(awaiting.slice(-MAX_AWAITING_ORDERS)),
+    );
+  }
+
+  private async removeAwaiting(orderId: string): Promise<void> {
+    const awaiting = await this.readAwaiting();
+    const remaining = awaiting.filter((entry) => entry.orderId !== orderId);
+    if (remaining.length !== awaiting.length) {
+      await this.store.putReport(AWAITING_PAYMENT_KEY, JSON.stringify(remaining));
+    }
+  }
+
+  /**
+   * Re-read agreed orders whose payment was pending, so a missed or delayed
+   * payment_updated event cannot leave the supplier without a result. After the
+   * payment window, a still-pending order is reported as a failed payment.
+   */
+  private async checkAwaitingPayments(result: ListenerTickResult): Promise<void> {
+    const awaiting = await this.readAwaiting();
+    if (awaiting.length === 0) {
+      return;
+    }
+    const waitMs = this.config.paymentWaitMs ?? DEFAULT_PAYMENT_WAIT_MS;
+    for (const entry of awaiting) {
+      let order: Order;
+      try {
+        order = await this.client.getOrder(entry.orderId);
+      } catch (error) {
+        result.lastError = toAgentError(error);
+        continue;
+      }
+      const deadline = entry.agreedAtMs + waitMs;
+      const nowMs = this.now();
+      if (!isTerminalPayment(order) && nowMs < deadline) {
+        continue;
+      }
+      const report = await this.reporter.reportOrder(order, {
+        nowMs,
+        paymentDeadlineAtMs: deadline,
+      });
+      if (report.reported) {
+        result.reports.push(report.message);
+      }
+      await this.removeAwaiting(entry.orderId);
+    }
   }
 
   private async requireSupplierId(): Promise<string> {
@@ -804,4 +941,10 @@ export class SupplierListener {
   }
 }
 
-
+function isTerminalPayment(order: Order): boolean {
+  return (
+    order.paymentStatus === "succeeded" ||
+    order.paymentStatus === "failed" ||
+    order.paymentStatus === "requires_action"
+  );
+}

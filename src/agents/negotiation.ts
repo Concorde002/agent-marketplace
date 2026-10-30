@@ -48,11 +48,6 @@ export interface BuyerCounterOfferInput {
   confirmedRequirementKeys?: readonly string[];
 }
 
-export interface DeliveredTotalSplit {
-  taxMinor: number;
-  deliveryMinor: number;
-}
-
 /**
  * Derive the buyer policy from the operator-provided mandate and the request
  * that was actually created. Neither value can be raised by a bot at runtime.
@@ -78,19 +73,6 @@ export function buyerPolicyFromMandate(
   };
 }
 
-/**
- * Split a delivered total into the two included components. This is a
- * deterministic demo bookkeeping split (roughly a 20% inclusive tax portion),
- * not a tax determination. The two components always sum exactly to the total.
- */
-export function splitDeliveredTotal(amountMinor: number): DeliveredTotalSplit {
-  if (!Number.isSafeInteger(amountMinor) || amountMinor < 0) {
-    throw new RangeError("amountMinor must be a non-negative safe integer");
-  }
-  const taxMinor = Math.floor(amountMinor / 6);
-  return { taxMinor, deliveryMinor: amountMinor - taxMinor };
-}
-
 function uniqueKeys(
   keys: readonly string[],
   known: ReadonlySet<string>,
@@ -112,7 +94,6 @@ function uniqueKeys(
 export function buildBuyerCounterOffer(
   input: BuyerCounterOfferInput,
 ): Omit<Offer, "id"> {
-  const split = splitDeliveredTotal(input.amountMinor);
   const knownKeys = new Set(input.request.requirements.map((entry) => entry.key));
   const confirmedRequirementKeys = uniqueKeys(
     [
@@ -134,8 +115,10 @@ export function buildBuyerCounterOffer(
       amountMinor: input.amountMinor,
       currency: input.currency,
     },
-    taxMinor: split.taxMinor,
-    deliveryMinor: split.deliveryMinor,
+    // MVP_LIMIT: demo terms carry no separate tax or delivery component, matching the
+    // supplier's offers. Upgrade: carry real components once the platform defines them.
+    taxMinor: 0,
+    deliveryMinor: 0,
     deliveryAt: input.deliveryAt,
     expiresAt: input.expiresAt,
     confirmedRequirementKeys,

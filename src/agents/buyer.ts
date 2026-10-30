@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import type {
   DiscoveryResult,
   Offer,
@@ -7,13 +9,14 @@ import type {
   RegistrationInput,
   SourcingRequest,
 } from "../contracts.js";
-import { PlatformClient, PlatformClientError } from "./client.js";
-import type { BuyerAgentConfig } from "./config.js";
+import { PlatformClient, PlatformClientError, stableHash } from "./client.js";
+import { DEFAULT_PAYMENT_WAIT_MS, type BuyerAgentConfig } from "./config.js";
 import {
   BuyerNegotiation,
   noMatchReasonFor,
   type NegotiationNoMatchReason,
 } from "./negotiation.js";
+import { buildReport, ReportLedger, type ReportOutcome } from "./reporter.js";
 import type { AgentStateStore } from "./store.js";
 import type { AgentClock, AgentLogger, SleepFn } from "./types.js";
 
@@ -25,10 +28,8 @@ export const MAX_DISCOVERY_POLLS = 20;
 export const MAX_QUOTE_CANDIDATES = 5;
 /** Safety bound so a static clock can never make the event loop spin forever. */
 export const MAX_EVENT_POLLS = 1_000;
-/** Bounded waits for a just-settled order to reach a terminal payment status. */
-export const PAYMENT_POLL_ATTEMPTS = 5;
-/** Delay between those reads; a sandbox payment normally resolves on the first read. */
-export const PAYMENT_POLL_DELAY_MS = 400;
+/** Hard ceiling on order reads while a sandbox payment is still pending. */
+export const MAX_PAYMENT_POLLS = 600;
 
 export interface BuyerOrderOutcome {
   status: "agreed_and_paid" | "payment_failed";
@@ -68,6 +69,12 @@ export interface BuyerRunnerOptions {
   supplierIdForCandidate?: (candidate: RankedCandidate) => ParticipantId | undefined;
   /** Convenience domain-keyed form of the same mapping. */
   supplierIdsByDomain?: Readonly<Record<string, ParticipantId>>;
+  /**
+   * Identifies one buyer run. Mutations that must be new per run (the sourcing
+   * request) derive their idempotency key from it, so a rerun with the same or
+   * changed inputs never replays an earlier run. Defaults to a random UUID.
+   */
+  runId?: string;
   discoveryTimeoutMs?: number;
   discoveryMaxPolls?: number;
   maxCandidates?: number;
@@ -114,7 +121,10 @@ export class BuyerRunner {
   private readonly discoveryMaxPolls: number;
   private readonly maxCandidates: number;
   private readonly maxEventPolls: number;
+  private readonly runId: string;
+  private readonly ledger: ReportLedger | undefined;
   private participantId: ParticipantId | undefined;
+  private currentRequestId: string | undefined;
   private cursor: string | undefined;
   private readonly seenKeys = new Set<string>();
   private reported = false;
@@ -130,6 +140,8 @@ export class BuyerRunner {
     this.knownParticipantId = options.knownParticipantId;
     this.supplierIdForCandidate = options.supplierIdForCandidate;
     this.supplierIdsByDomain = options.supplierIdsByDomain;
+    this.runId = options.runId ?? randomUUID();
+    this.ledger = this.store === undefined ? undefined : new ReportLedger(this.store);
     this.discoveryTimeoutMs = Math.max(
       1,
       options.discoveryTimeoutMs ?? DEFAULT_DISCOVERY_TIMEOUT_MS,
@@ -152,6 +164,7 @@ export class BuyerRunner {
     const startedAtMs = this.clock.now();
     const participantId = await this.ensureRegistered();
     const request = await this.createRequest();
+    this.currentRequestId = request.id;
 
     const discovery = await this.awaitDiscovery(request.id);
     if (discovery.kind === "failed") {
@@ -215,7 +228,9 @@ export class BuyerRunner {
       return this.participantId;
     }
     const input = buildBuyerRegistration(this.config);
-    const idempotencyKey = `agent-register-buyer-${registrationKey(this.config)}`;
+    // The key covers the registration body, so a changed mandate is a new
+    // mutation rather than a reused key with a different body.
+    const idempotencyKey = `agent-register-buyer-${registrationKey(this.config)}-${stableHash(input)}`;
     try {
       const result = await this.client.registerParticipant(input, {
         idempotencyKey,
@@ -223,13 +238,15 @@ export class BuyerRunner {
       this.participantId = result.participantId;
       return result.participantId;
     } catch (error) {
-      if (
-        error instanceof PlatformClientError &&
-        error.code === "ALREADY_REGISTERED" &&
-        this.knownParticipantId !== undefined
-      ) {
-        this.participantId = this.knownParticipantId;
-        return this.knownParticipantId;
+      if (error instanceof PlatformClientError && error.code === "ALREADY_REGISTERED") {
+        const existing = error.participantId ?? this.knownParticipantId;
+        if (existing !== undefined) {
+          this.participantId = existing;
+          return existing;
+        }
+        throw new Error(
+          "buyer token is already registered and neither the platform nor AGENT_STATE_DIR supplied its participant id",
+        );
       }
       throw error;
     }
@@ -256,7 +273,7 @@ export class BuyerRunner {
       demo: true,
     };
     return this.client.createRequest(input, {
-      idempotencyKey: `agent-create-request-buyer-${registrationKey(this.config)}`,
+      idempotencyKey: `agent-create-request-${this.runId}`,
     });
   }
 
@@ -334,11 +351,10 @@ export class BuyerRunner {
       return this.supplierIdForCandidate(candidate);
     }
     const domain = normalizeDomain(candidate.candidate.company.officialDomain);
-    const mapped = this.supplierIdsByDomain?.[domain];
-    if (mapped !== undefined) {
-      return mapped;
-    }
-    return candidate.candidate.company.publicOrganizationId;
+    // MVP_LIMIT: the contract has no candidate -> participant resolution yet, so the
+    // operator injects the mapping. Evidence fields (including publicOrganizationId)
+    // never choose a quote recipient. Upgrade: a platform resolve call after ranking.
+    return this.supplierIdsByDomain?.[domain];
   }
 
   private async negotiate(
@@ -503,7 +519,8 @@ export class BuyerRunner {
       });
     }
 
-    const order = await this.awaitTerminalPayment(orderId);
+    const paymentDeadlineAtMs = this.clock.now() + this.paymentWaitMs();
+    const order = await this.awaitTerminalPayment(orderId, paymentDeadlineAtMs);
     if (order.acceptedOffer.requestId !== context.request.id) {
       return this.finishNoMatch(
         "platform_error",
@@ -511,21 +528,27 @@ export class BuyerRunner {
       );
     }
 
-    const outcome = buildOrderOutcome(order);
+    const outcome = buildOrderOutcome(order, this.clock.now(), paymentDeadlineAtMs);
     context.lastOutcome = outcome;
     return this.emitOutcome(outcome);
   }
 
-  private async awaitTerminalPayment(orderId: string): Promise<Order> {
+  private paymentWaitMs(): number {
+    return Math.max(1, this.config.paymentWaitMs ?? DEFAULT_PAYMENT_WAIT_MS);
+  }
+
+  /**
+   * Re-read the order until the provider status is terminal or the payment
+   * window closes. A pending charge is never reported as failed early.
+   */
+  private async awaitTerminalPayment(orderId: string, deadlineAtMs: number): Promise<Order> {
     let order = await this.client.getOrder(orderId);
-    for (
-      let attempt = 0;
-      attempt < PAYMENT_POLL_ATTEMPTS && !isTerminalPayment(order);
-      attempt += 1
-    ) {
-      // A sandbox payment can still be settling when the agreement is read. Reporting
-      // "payment failed" for a pending charge would be a false negative.
-      await this.sleep(PAYMENT_POLL_DELAY_MS);
+    for (let poll = 0; poll < MAX_PAYMENT_POLLS && !isTerminalPayment(order); poll += 1) {
+      const remainingMs = deadlineAtMs - this.clock.now();
+      if (remainingMs <= 0) {
+        break;
+      }
+      await this.sleep(Math.min(this.config.pollIntervalMs, remainingMs));
       order = await this.client.getOrder(orderId);
     }
     return order;
@@ -539,22 +562,47 @@ export class BuyerRunner {
     return this.emitOutcome(outcome);
   }
 
+  /**
+   * Deliver the result once through the injected chat sink. The persisted
+   * ledger deduplicates across restarts, and a failed delivery is queued for
+   * `report_pending` instead of being dropped. Delivery never changes state.
+   */
   private async emitOutcome<T extends BuyerOutcome>(outcome: T): Promise<T> {
     if (this.reported) {
       return outcome;
     }
     this.reported = true;
+    const subjectKey =
+      outcome.status === "no_match"
+        ? `request:${this.currentRequestId ?? `run:${this.runId}`}`
+        : outcome.order.id;
+    const kind: ReportOutcome =
+      outcome.status === "agreed_and_paid"
+        ? "paid"
+        : outcome.status === "no_match"
+          ? "no_match"
+          : "payment_failed";
+    if (this.ledger !== undefined && (await this.ledger.isReported(subjectKey, kind))) {
+      return outcome;
+    }
     if (this.report === undefined) {
       return outcome;
     }
     try {
       await this.report(outcome);
+      await this.ledger?.recordReport(subjectKey, kind, outcome.message);
     } catch (error) {
-      this.logger?.warn?.("buyer result report failed; order state unchanged", {
+      this.logger?.warn?.("buyer result report failed; queued, order state unchanged", {
         reason: safeErrorMessage(error),
       });
+      await this.ledger?.enqueuePending(subjectKey, kind, outcome.message, this.clock.now());
     }
     return outcome;
+  }
+
+  /** Completion messages whose chat delivery failed earlier. */
+  async drainPendingReports(): Promise<string[]> {
+    return this.ledger === undefined ? [] : this.ledger.drainPending();
   }
 
   private async isSeen(key: string): Promise<boolean> {
@@ -608,50 +656,36 @@ function buildBuyerRegistration(config: BuyerAgentConfig): RegistrationInput {
   };
 }
 
-function buildOrderOutcome(order: Order): BuyerOrderOutcome {
-  const offer = order.acceptedOffer;
-  const parts = [
-    `order ${order.id}`,
-    `offer ${offer.id}`,
-    `total ${offer.deliveredTotal.amountMinor} ${offer.deliveredTotal.currency}`,
-  ];
-  if (order.demoInvoice !== undefined) {
-    parts.push(`document ${order.demoInvoice.id}`);
+/** Map authoritative order state to one of the allowed chat literals. */
+function buildOrderOutcome(
+  order: Order,
+  nowMs: number,
+  paymentDeadlineAtMs: number,
+): BuyerOrderOutcome {
+  const decision = buildReport(order, { nowMs, paymentDeadlineAtMs });
+  if (decision.report && decision.outcome === "paid") {
+    return { status: "agreed_and_paid", order, message: decision.message };
   }
-  if (order.sandboxPaymentId !== undefined) {
-    parts.push(`payment ${order.sandboxPaymentId}`);
+  if (decision.report) {
+    return { status: "payment_failed", order, message: decision.message };
   }
-  const details = parts.join(", ");
-
-  if (
-    order.agreementStatus === "agreed" &&
-    order.paymentStatus === "succeeded" &&
-    typeof order.sandboxPaymentId === "string" &&
-    order.sandboxPaymentId !== ""
-  ) {
-    return {
-      status: "agreed_and_paid",
-      order,
-      message: `agreed and sandbox-paid — ${details}`,
-    };
-  }
-
   const reason =
-    order.paymentStatus === "failed"
-      ? "payment failed"
-      : order.paymentStatus === "requires_action" ||
-          order.paymentStatus === "pending"
-        ? "payment requires further action"
-        : `payment ${order.paymentStatus}`;
+    decision.reason === "missing_payment_reference"
+      ? "provider reported success without a payment reference"
+      : `payment ${order.paymentStatus} when the run ended`;
   return {
     status: "payment_failed",
     order,
-    message: `payment failed — ${reason}; ${details}`,
+    message: `payment failed — ${reason}; order ${order.id}`,
   };
 }
 
 function isTerminalPayment(order: Order): boolean {
-  return order.paymentStatus === "succeeded" || order.paymentStatus === "failed";
+  return (
+    order.paymentStatus === "succeeded" ||
+    order.paymentStatus === "failed" ||
+    order.paymentStatus === "requires_action"
+  );
 }
 
 function buildNoMatchOutcome(

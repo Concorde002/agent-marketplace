@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { ParticipantId, RegistrationInput } from "../../contracts.js";
-import { PlatformClient, PlatformClientError } from "../client.js";
+import { PlatformClient, PlatformClientError, stableHash } from "../client.js";
 import {
   loadConfig,
   type AgentEnvironment,
@@ -28,6 +28,12 @@ export interface SupplierCliRunOptions {
   participantId?: string;
   /** Stops the loop; the process wires SIGINT/SIGTERM to this signal. */
   signal?: AbortSignal;
+  /**
+   * The supplier bot's conversation. The terminal harness prints each message;
+   * a bot integration passes its own transport. A throwing channel queues the
+   * message for `report_pending` instead of losing it.
+   */
+  channel?: (message: string) => Promise<void>;
   /** Called after every tick, before the backoff delay. */
   onTick?: (result: ListenerTickResult, tick: number) => void | Promise<void>;
   logger?: AgentLogger;
@@ -57,11 +63,11 @@ export async function registerSupplierParticipant(
     return stored.trim();
   }
 
+  const registration = buildSupplierRegistration(config);
   try {
-    const { participantId } = await client.registerParticipant(
-      buildSupplierRegistration(config),
-      { idempotencyKey: `agent-register-supplier-${registrationKey(config)}` },
-    );
+    const { participantId } = await client.registerParticipant(registration, {
+      idempotencyKey: `agent-register-supplier-${registrationKey(config)}-${stableHash(registration)}`,
+    });
     await store.putReport(PARTICIPANT_ID_STATE_KEY, participantId);
     return participantId;
   } catch (error) {
@@ -69,8 +75,12 @@ export async function registerSupplierParticipant(
       error instanceof PlatformClientError &&
       error.code === "ALREADY_REGISTERED"
     ) {
+      if (error.participantId !== undefined) {
+        await store.putReport(PARTICIPANT_ID_STATE_KEY, error.participantId);
+        return error.participantId;
+      }
       throw new Error(
-        "supplier token is already registered but no participant id is persisted in AGENT_STATE_DIR; remove the state directory to register a new participant",
+        "supplier token is already registered and neither the platform nor AGENT_STATE_DIR supplied its participant id; ask the platform owner for the existing id",
       );
     }
     throw error;
@@ -113,7 +123,11 @@ export async function runSupplierLoop(
     client,
     store,
     config,
-    channel: async (_message: string): Promise<void> => undefined,
+    channel:
+      options.channel ??
+      (async (message: string): Promise<void> => {
+        console.log(`[supplier chat] ${message}`);
+      }),
     participantId,
     ...(options.logger === undefined ? {} : { logger: options.logger }),
   });
@@ -168,7 +182,7 @@ function buildSupplierRegistration(
         amountMinor: config.supplier.minTotalMinor,
         currency: config.currency,
       },
-      availableQuantity: Math.max(1, Math.round(config.supplier.quantity)),
+      availableQuantity: config.supplier.quantity,
       unit: config.supplier.unit,
       earliestDeliveryAt: config.supplier.earliestDeliveryAt,
       expiresAt: config.supplier.expiresAt,

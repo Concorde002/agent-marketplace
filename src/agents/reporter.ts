@@ -74,6 +74,14 @@ function sanitizeReason(reason: string): string {
 
 function orderReference(order: Order, paymentReference: string | undefined): string {
   const parts: string[] = [`order ${order.id}`];
+  const total = order.acceptedOffer?.deliveredTotal;
+  if (
+    total !== undefined &&
+    Number.isSafeInteger(total.amountMinor) &&
+    typeof total.currency === "string"
+  ) {
+    parts.push(`total ${formatMinor(total.amountMinor)} ${total.currency}`);
+  }
   const documentId = readReference(order.demoInvoice?.id);
   if (documentId !== undefined) {
     parts.push(`document ${documentId}`);
@@ -82,6 +90,15 @@ function orderReference(order: Order, paymentReference: string | undefined): str
     parts.push(`payment ${paymentReference}`);
   }
   return parts.join("; ");
+}
+
+/** 484000 -> "4840.00". Minor units are assumed to be cents for display only. */
+function formatMinor(amountMinor: number): string {
+  const sign = amountMinor < 0 ? "-" : "";
+  const absolute = Math.abs(amountMinor);
+  const major = Math.floor(absolute / 100);
+  const minor = String(absolute % 100).padStart(2, "0");
+  return `${sign}${major}.${minor}`;
 }
 
 function isNoMatchSubject(subject: ReportSubject): subject is NoMatchSubject {
@@ -127,6 +144,19 @@ export function buildReport(
     };
   }
 
+  if (paymentStatus === "requires_action") {
+    // A headless sandbox run has no customer to complete extra authentication, so
+    // this is reported now as a failure that needs action, never as paid.
+    return {
+      report: true,
+      outcome: "payment_failed",
+      message: `${REPORT_PAYMENT_FAILED_PREFIX} — payment requires further action; ${orderReference(
+        subject,
+        readReference(subject.sandboxPaymentId),
+      )}`,
+    };
+  }
+
   if (paymentStatus === "failed") {
     return {
       report: true,
@@ -138,11 +168,7 @@ export function buildReport(
     };
   }
 
-  if (
-    paymentStatus === "not_started" ||
-    paymentStatus === "pending" ||
-    paymentStatus === "requires_action"
-  ) {
+  if (paymentStatus === "not_started" || paymentStatus === "pending") {
     const nowMs = options.nowMs ?? Date.now();
     const deadline = options.paymentDeadlineAtMs;
     if (deadline !== undefined && nowMs >= deadline) {
@@ -152,7 +178,7 @@ export function buildReport(
       return {
         report: true,
         outcome: "payment_failed",
-        message: `${REPORT_PAYMENT_FAILED_PREFIX} — payment requires further action; order ${subject.id}${suffix}`,
+        message: `${REPORT_PAYMENT_FAILED_PREFIX} — payment still ${paymentStatus} after the reporting window; order ${subject.id}${suffix}`,
       };
     }
   }
@@ -264,6 +290,30 @@ export class ReportLedger {
       await this.store.putReport(PENDING_REPORTS_KEY, JSON.stringify([]));
     }
     return entries.map((entry) => entry.message);
+  }
+
+  /**
+   * Try to deliver queued messages through the channel again. Delivered ones
+   * are recorded as reported and leave the queue; the rest stay queued.
+   */
+  async retryPending(channel: ReportChannel): Promise<string[]> {
+    const entries = await this.readPendingEntries();
+    if (entries.length === 0) {
+      return [];
+    }
+    const delivered: string[] = [];
+    const remaining: PendingReportEntry[] = [];
+    for (const entry of entries) {
+      try {
+        await channel(entry.message);
+        await this.store.putReport(entry.key, entry.message);
+        delivered.push(entry.message);
+      } catch {
+        remaining.push(entry);
+      }
+    }
+    await this.store.putReport(PENDING_REPORTS_KEY, JSON.stringify(remaining));
+    return delivered;
   }
 
   private async readPendingEntries(): Promise<PendingReportEntry[]> {
@@ -392,6 +442,10 @@ export class ResultReporter {
 
   pendingReports(): Promise<string[]> {
     return this.ledger.listPending();
+  }
+
+  retryPendingReports(): Promise<string[]> {
+    return this.ledger.retryPending(this.channel);
   }
 
   drainPendingReports(): Promise<string[]> {

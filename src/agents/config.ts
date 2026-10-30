@@ -48,6 +48,11 @@ export interface AgentConfigBase {
   negotiationMaxRevisions: number;
   negotiationDeadlineMs: number;
   requestTimeoutMs: number;
+  /**
+   * How long to keep reading an agreed order whose sandbox payment is still pending before
+   * reporting it as failed. Defaults to DEFAULT_PAYMENT_WAIT_MS when absent.
+   */
+  paymentWaitMs?: number;
   sandboxOnly: true;
 }
 
@@ -67,6 +72,10 @@ const DEFAULT_STATE_DIR = ".agent-state";
 const DEFAULT_POLL_INTERVAL_MS = 3_000;
 const DEFAULT_POLL_MAX_INTERVAL_MS = 30_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
+/** Default wait for a pending sandbox payment to reach a terminal provider status. */
+export const DEFAULT_PAYMENT_WAIT_MS = 120_000;
+/** Hard ceiling for PAYMENT_WAIT_MS. */
+export const MAX_PAYMENT_WAIT_MS = 600_000;
 
 const DOMAIN_PATTERN =
   /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
@@ -400,6 +409,11 @@ export function loadConfig(env: AgentEnvironment = process.env): AgentConfig {
     errors,
   );
 
+  const paymentWaitMs = Math.min(
+    optionalUnsignedInteger(env, "PAYMENT_WAIT_MS", DEFAULT_PAYMENT_WAIT_MS, errors),
+    MAX_PAYMENT_WAIT_MS,
+  );
+
   const buyer = role === "buyer" ? readBuyerMandate(env, errors) : undefined;
   const supplier =
     role === "supplier" ? readSupplierMandate(env, errors) : undefined;
@@ -421,6 +435,7 @@ export function loadConfig(env: AgentEnvironment = process.env): AgentConfig {
     negotiationMaxRevisions,
     negotiationDeadlineMs,
     requestTimeoutMs,
+    paymentWaitMs,
     sandboxOnly: true,
   };
 

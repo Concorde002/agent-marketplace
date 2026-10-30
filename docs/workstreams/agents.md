@@ -62,6 +62,33 @@ npm run check           # full repository suite green
 A real `@modelcontextprotocol/sdk` 1.28.0 client completed `initialize`, `tools/list` (14 tools) and
 `tools/call` against the gateway over HTTP, including token propagation and a completion report.
 
+## Review fixes (2026-10-30)
+
+Found in review and fixed with regression tests (`tests/agents/rerun-and-payment.test.ts`, listener
+and policy tests):
+
+- **Reruns.** Each buyer run has its own id, so the sourcing request is new every run. Registration
+  keys cover the registration body, and `ALREADY_REGISTERED` reuses the platform-returned or stored
+  participant id. Before: a changed budget crashed with `IDEMPOTENCY_KEY_REUSED`, and an identical
+  rerun replayed the previous order as a new "agreed and sandbox-paid".
+- **Slow payments.** The buyer re-reads a pending order for up to `PAYMENT_WAIT_MS` (default 120s)
+  and reports `payment failed` only after that window. Before: about 2s.
+- **Supplier never settles.** The listener no longer calls `settle`. It re-reads agreed orders
+  until payment is terminal. Before: it retried the buyer's declined charge.
+- **Negotiation.** The buyer opens 10% below the lower of ask and budget, and makes a final counter
+  at its ceiling only when one revision is left. The supplier splits the difference, never below
+  its floor and never above a feasible stated budget. Before: the buyer's only counter was exactly
+  its budget.
+- **Tax/delivery.** Demo offers carry `taxMinor` and `deliveryMinor` = 0 (`MVP_LIMIT`). Before: the
+  buyer invented a 1/6 tax and 5/6 "delivery" split.
+- **Buyer reports.** The buyer reports through the persisted ledger: deduplicated, and queued on
+  chat failure. The listener re-sends queued messages on its next tick.
+  `requires_action` is reported at once as `payment failed — payment requires further action`.
+- **Stuck events.** An event the platform rejects (4xx) is skipped after 3 attempts, and any event
+  after 10, so it cannot hold the cursor.
+- **Evidence-derived routing removed.** `publicOrganizationId` from evidence is no longer used as a
+  quote recipient.
+
 ## Gaps
 
 - No live Grok Bot account was available, so the vendor-documented custom-MCP path is documented and
@@ -79,7 +106,10 @@ A real `@modelcontextprotocol/sdk` 1.28.0 client completed `initialize`, `tools/
 - Payment-status timing depends on the platform's `payment_updated` event; a stuck `pending` order is
   reported as failed only after the reporting window, never as paid.
 - No refusal endpoint exists in the contract, so a supplier refusal is recorded locally and expressed
-  as non-acceptance; the buyer reports `no match` on expiry or revision exhaustion.
+  as non-acceptance; the buyer reports `no match` only at its negotiation deadline. Interface request:
+  a scoped decline (`POST /v1/requests/{id}/declines`) that emits an event to the buyer.
+- Interface request: `ALREADY_REGISTERED` should return the existing `participantId` (the local test
+  double does) so a lost state directory does not block a bot.
 
 ## Next task
 

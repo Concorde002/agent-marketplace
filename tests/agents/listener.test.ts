@@ -8,6 +8,7 @@ import type {
 import { PlatformClient } from "../../src/agents/client.js";
 import type { SupplierAgentConfig } from "../../src/agents/config.js";
 import {
+  MAX_REJECTED_EVENT_ATTEMPTS,
   SupplierListener,
   type ListenerTickResult,
   type SupplierListenerOptions,
@@ -195,7 +196,7 @@ function findSkipped(
   return tick.skipped.find((entry) => entry.eventId === eventId)?.reason;
 }
 
-test("supplier completes quote, counter, accept, settle and reports once", async () => {
+test("supplier quotes, accepts a counter, never settles, and reports the buyer's payment once", async () => {
   const harness = await createHarness({ seed: { withQuoteRequest: true } });
   try {
     const first = await harness.listener.tick();
@@ -218,6 +219,10 @@ test("supplier completes quote, counter, accept, settle and reports once", async
     const order = harness.fake.getOrders()[0];
     assert.ok(order);
     assert.equal(order.acceptedOffer.id, counter.id);
+    assert.equal(order.paymentStatus, "not_started");
+
+    // Settlement is the buyer's action.
+    await harness.buyer.settleOrder(order.id);
 
     const third = await harness.listener.tick();
     assert.equal(third.failed.length, 0);
@@ -233,6 +238,10 @@ test("supplier completes quote, counter, accept, settle and reports once", async
     assert.equal(fourth.reports.length, 0);
     assert.equal(harness.messages.length, 1);
     assert.equal(harness.fake.state.paymentAttempts.get(order.id), 1);
+    const supplierSettles = harness.fake.state.mutationLog.filter(
+      (entry) => entry.path.endsWith("/settle") && entry.key.startsWith("listener:"),
+    );
+    assert.equal(supplierSettles.length, 0);
   } finally {
     await harness.close();
   }
@@ -342,6 +351,9 @@ test("a failed payment is reported as payment failed, never as paid", async () =
     assert.ok(offer);
     const acceptance = await harness.buyer.acceptOffer(offer.id);
     assert.equal(acceptance.state, "agreed");
+    if (acceptance.state === "agreed") {
+      await harness.buyer.settleOrder(acceptance.order.id);
+    }
 
     const settled = await harness.listener.tick();
     assert.equal(settled.failed.length, 0);
@@ -361,6 +373,8 @@ test("a failed payment is reported as payment failed, never as paid", async () =
     assert.ok(
       harness.messages.every((entry) => !entry.startsWith(REPORT_PAID_PREFIX)),
     );
+    // The supplier never retries the buyer's declined charge.
+    assert.equal(harness.fake.state.paymentAttempts.get(order.id), 1);
   } finally {
     await harness.close();
   }
@@ -383,12 +397,19 @@ test("the listener keeps polling after agreement and through payment updates", a
       },
     });
 
+    let orderId: string | undefined;
     await listener.run(controller.signal, async (result) => {
       ticks.push(result);
       if (ticks.length === 1) {
         const offer = harness.fake.getOffers()[0];
         assert.ok(offer);
-        await harness.buyer.acceptOffer(offer.id);
+        const acceptance = await harness.buyer.acceptOffer(offer.id);
+        if (acceptance.state === "agreed") {
+          orderId = acceptance.order.id;
+        }
+      } else if (ticks.length === 2 && orderId !== undefined) {
+        // The buyer settles only after the supplier has seen the agreement.
+        await harness.buyer.settleOrder(orderId);
       }
     });
 
@@ -397,13 +418,17 @@ test("the listener keeps polling after agreement and through payment updates", a
     assert.ok(harness.messages[0]?.startsWith(REPORT_PAID_PREFIX));
     assert.ok(ticks.length >= 4);
 
-    const afterAgreement = ticks[2];
-    assert.ok(afterAgreement);
+    const atAgreement = ticks[1];
+    assert.ok(atAgreement);
     assert.ok(
-      afterAgreement.handled.length >= 1,
-      "expected a payment update to be handled after the agreement",
+      atAgreement.skipped.some((entry) => entry.reason?.startsWith("awaiting_payment:")),
+      "expected the agreement to wait for payment instead of settling",
     );
-    assert.equal(afterAgreement.reports.length, 0);
+    assert.equal(atAgreement.reports.length, 0);
+
+    const afterPayment = ticks[2];
+    assert.ok(afterPayment);
+    assert.equal(afterPayment.reports.length, 1);
   } finally {
     await harness.close();
   }
@@ -576,6 +601,7 @@ test("a channel failure does not alter order state and queues the report", async
     assert.equal(acceptance.state, "agreed");
     const order = harness.fake.getOrders()[0];
     assert.ok(order);
+    await harness.buyer.settleOrder(order.id);
 
     const failedTick = await harness.listener.tick();
     assert.equal(failedTick.failed.length, 0);
@@ -588,10 +614,9 @@ test("a channel failure does not alter order state and queues the report", async
     assert.equal(settled.agreementStatus, "agreed");
     assert.equal(settled.acceptedOffer.id, offer.id);
 
-    const pending = await harness.listener.drainPendingReports();
+    const pending = await harness.listener.pendingReports();
     assert.equal(pending.length, 1);
     assert.ok(pending[0]?.startsWith(REPORT_PAID_PREFIX));
-    assert.deepEqual(await harness.listener.drainPendingReports(), []);
 
     const snapshot = JSON.stringify(settled);
     offline = false;
@@ -602,6 +627,11 @@ test("a channel failure does not alter order state and queues the report", async
     assert.ok(delivered[0]?.startsWith(REPORT_PAID_PREFIX));
     assert.equal(JSON.stringify(harness.fake.getOrders()[0]), snapshot);
     assert.equal(harness.fake.state.paymentAttempts.get(order.id), 1);
+    // Delivered from the queue exactly once; nothing left and nothing repeated.
+    assert.deepEqual(await recovered.pendingReports(), []);
+    const quiet = await recovered.tick();
+    assert.equal(quiet.reports.length, 0);
+    assert.equal(delivered.length, 1);
   } finally {
     await harness.close();
   }
@@ -609,3 +639,31 @@ test("a channel failure does not alter order state and queues the report", async
 
 
 
+
+test("an event the platform keeps rejecting is skipped after bounded attempts", async () => {
+  const harness = await createHarness({ seed: { withQuoteRequest: true } });
+  try {
+    harness.fake.failNextRequest(
+      400,
+      "INVALID_REQUEST",
+      10,
+      `/v1/requests/${harness.seed.requestId}`,
+    );
+    const attempts: ListenerTickResult[] = [];
+    for (let index = 0; index < MAX_REJECTED_EVENT_ATTEMPTS; index += 1) {
+      attempts.push(await harness.listener.tick());
+    }
+    // Retried while attempts remain, then skipped so the cursor can move on.
+    assert.ok(attempts.slice(0, -1).every((tick) => tick.failed.length === 1));
+    const last = attempts.at(-1);
+    assert.ok(last);
+    assert.match(last.failed[0]?.reason ?? "", /skipped_after_3_attempts/);
+    assert.equal(await harness.store.getCursor(), "1");
+
+    const after = await harness.listener.tick();
+    assert.equal(after.failed.length, 0);
+    assert.equal(harness.fake.getOffers().length, 0);
+  } finally {
+    await harness.close();
+  }
+});

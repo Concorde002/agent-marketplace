@@ -27,7 +27,9 @@ export interface BuyerCliRunOptions {
   /** Domain-to-participant mapping for platforms that do not expose the id. */
   supplierIdsByDomain?: Readonly<Record<string, ParticipantId>>;
   /** Injected chat transport, e.g. a bot conversation in the demo. */
-  onReport?: (outcome: BuyerOutcome) => void;
+  onReport?: (outcome: BuyerOutcome) => void | Promise<void>;
+  /** Overrides the per-run id; defaults to a fresh UUID so reruns never replay. */
+  runId?: string;
   logger?: AgentLogger;
 }
 
@@ -89,7 +91,12 @@ export async function runBuyerOnce(
       ? {}
       : { knownParticipantId: knownParticipantId.trim() }),
     ...(supplierIdsByDomain === undefined ? {} : { supplierIdsByDomain }),
-    ...(options.onReport === undefined ? {} : { report: options.onReport }),
+    ...(options.runId === undefined ? {} : { runId: options.runId }),
+    report:
+      options.onReport ??
+      ((outcome: BuyerOutcome): void => {
+        console.log(`[buyer chat] ${outcome.message}`);
+      }),
     ...(options.logger === undefined ? {} : { logger: options.logger }),
   });
 
@@ -140,8 +147,8 @@ export function buyerOutcomeLine(run: BuyerCliRun): Record<string, unknown> {
 }
 
 /**
- * Optional wiring for platforms whose discovery candidates carry no
- * `publicOrganizationId`: a JSON object of company domain to participant id.
+ * MVP_LIMIT: operator-supplied mapping until the platform resolves a ranked
+ * candidate to a connected participant: JSON object of company domain to participant id.
  */
 function readSupplierIds(
   env: AgentEnvironment,
