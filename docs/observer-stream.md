@@ -123,6 +123,9 @@ Sent before the next `log` when your client fell behind (over 1 MiB unsent) and 
 | `get_order` | `GET /v1/orders/{orderId}` | debug |
 | `mcp` | `POST /mcp` (the tool name is in `subject.tool`) | info |
 | `stripe_webhook` | `POST /webhooks/stripe` | info |
+| `observer_list_runs` | `GET /v1/observer/runs` (the observer page) | debug |
+| `observer_get_run` | `GET /v1/observer/runs/{runId}` (the observer page) | debug |
+| `observer_preflight` | `OPTIONS /v1/observer/…` (CORS preflight) | debug |
 | `health`, `agent_instructions`, `openapi` | `GET /health`, `/agent.txt` or `/llms.txt`, `/openapi.json` | debug |
 | `unknown_route` | anything else | warn |
 

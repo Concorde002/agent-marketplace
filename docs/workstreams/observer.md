@@ -11,7 +11,7 @@ Owner: dashboard developer. Scope: one read-only observer page and its presentat
   configured name, sources with retrieval receipts, frozen comparison, representative lookup after
   ranking, offers/acceptances, order and payment. Desktop, projector and phone layouts; light and
   dark.
-- Proposed backend piece (needs the backend developer's review): `src/platform/observer.ts`,
+- Backend piece, reviewed and integrated by the platform owner (see platform.md): `src/platform/observer-runs.ts`,
   observer routes in `src/platform/http.ts`, migration `20261030170000_observer.sql`, config in
   `src/server.ts`, operator key command `observer:operator`.
 - `tests/platform/observer-projection.test.ts` (10): paid run with both lanes and observed clients; no private
@@ -27,7 +27,7 @@ and dark, disconnected state, new-run banner, refused run. Evidence class: local
 
 ## Missing / blocked
 
-1. Backend developer: review and own the observer projection, auth and redaction; merge; operator
+1. Backend review done on `maksym/observer-dashboard-backend` (findings in platform.md). Remaining: merge; operator
    applies the migration and sets `OBSERVER_ALLOWED_ORIGINS`. Until then the deployed page can only
    show its connect screen.
 2. The deployed page has not been verified against the actual service (a public page cannot reach a

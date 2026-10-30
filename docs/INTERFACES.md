@@ -40,6 +40,8 @@ Use `npm run test:platform`, `npm run test:agents`, `npm run test:sourcing`, and
 
 Platform serves `GET /observer/ws`, a read-only WebSocket for the observer dashboard: one `log` message per endpoint call, plus `hello` and `dropped` ([observer-stream.md](observer-stream.md)). It is an execution trace, not authoritative state: dashboards read order and payment results from the backend. Bots must not connect to it or receive `OBSERVER_TOKEN`. New operations or fields are added by the platform owner as backward-compatible additions to message version `v: 1`.
 
+The observer page reads `GET /v1/observer/runs[/{runId}]` with an operator-issued `obs_` key scoped to one demo buyer ([runbook](observer-runbook.md)). It is read-only, CORS-limited to `OBSERVER_ALLOWED_ORIGINS`, and maps every field explicitly. Participant tokens are refused there, and observer keys are refused on participant routes. Like `OBSERVER_TOKEN`, observer keys are never given to bots.
+
 ## Changing a boundary
 
 Propose the required fields/signature/read route in a PR or issue. Platform owner updates contracts and API description; affected owner updates its consumer in the same coordinated increment. Keep main compiling. This draft deliberately does not pretend that persistence, identity verification, JSON schemas, and event delivery have already been implemented.

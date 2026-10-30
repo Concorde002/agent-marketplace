@@ -82,6 +82,21 @@ The printed credential record belongs in server-side storage, not in Git.
 
 Checked locally (2026-10-30), disposable fixtures only: `tests/platform/observer.test.ts` adds 11 tests on PGlite and loopback sockets (one log per call in order, MCP correlation, redaction of budgets/floors/tokens/headers, refusals, token and loopback gating, broadcast and backlog, read-only stream). Each of 9 safeguards was removed one at a time and a test failed each time. `npm run check`: 333 tests, 329 pass, 0 fail, 4 TODO, against 322/318 on main `cd23842`. `node dist/src/server.js` with `OBSERVER_TOKEN`: unauthenticated upgrade refused with 401; an authorised client received `hello` and one log per HTTP call. Not verified hosted.
 
+### Observer page API (#18)
+
+Integrated from PR #18 on branch `maksym/observer-dashboard-backend`, with #18's four commits kept. Projection and traces live in `src/platform/observer-runs.ts`, because #19 already uses `observer.ts` for the stream. Its `createPlatformHttp` settings are now `observerApi`. `GET /v1/observer/runs[/{runId}]` accepts only an operator-issued `obs_` key: stored as a SHA-256 hash, scoped to one buyer's runs, expiring within 7 days, revocable. CORS allows only exact `OBSERVER_ALLOWED_ORIGINS`. `supabase/migrations/20261030170000_observer.sql` adds `agent_traces`, `client_sightings` and `observer_sessions`.
+
+Review: authentication, scoping (another buyer's run is a plain 404), CORS, phase derivation and redaction are sound. The projection maps every field explicitly and never reads mandates, grants, credentials, payment methods or the request budget. The page keeps its key in the URL fragment, in memory only, uses no HTML-injection sinks and ships a strict CSP. Fixed, each with a test that fails without it:
+
+1. Trace writes held every authenticated response, outside any statement timeout. The response now waits at most 250 ms; slower writes finish in the background.
+2. The client sighting was rewritten on every call, including event polls. An unchanged client is now rewritten at most every 30 s; a changed version is recorded at once.
+3. The observer page's requests showed in the stream as `unknown_route`. They are now `observer_list_runs`, `observer_get_run` and `observer_preflight`.
+4. The projection tests lived in `tests/observer/`, which CI never runs. They now run in `test:platform`.
+
+The observer key, like `OBSERVER_TOKEN`, must never reach a bot: both views show each side's offers and refusals.
+
+Checked locally (2026-10-30): `npm run check` at #18's head `74e9b52`: 332 tests, 328 pass, 0 fail, 4 TODO, plus 10/10 observer tests. After integration and fixes (3 runs): 346 tests, 342 pass, 0 fail, 4 TODO. Each of 6 fixes removed one at a time: a test failed each time. All three migrations applied with `psql --single-transaction` to disposable Postgres 17.11. As the backend role, trace inserts, sighting upserts and session reads work. Creating or un-revoking sessions, and updating or deleting traces, are refused. `anon`/`authenticated` have no grants, RLS is on for all three tables, keys over 7 days are refused, and re-applying fails safely. Not verified hosted.
+
 ## Verification
 
 Run `npm run test:platform` and `npm run check`.
