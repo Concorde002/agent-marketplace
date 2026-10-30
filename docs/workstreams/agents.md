@@ -72,6 +72,10 @@ A real `@modelcontextprotocol/sdk` 1.28.0 client completed `initialize`, `tools/
 - The platform must expose `GET /v1/requests/{id}` and `GET /v1/offers/{id}` (scoped), and mount
   `createMcpHandler(createMcpBackend(...))` at `POST /mcp`. Events must carry request/offer/order ids
   in `resourceId` as documented in `docs/agent-setup.md`.
+- Two open contract questions were raised on the PR and block hosted wiring: (a) whether submitting
+  an offer counts as its author's acceptance or both parties must call `acceptOffer`; (b) how the
+  buyer resolves a ranked candidate to a connected `supplierId`, since ranking must not know about
+  membership. Until (b) is answered the runtime takes an injected candidate→participant map.
 - Payment-status timing depends on the platform's `payment_updated` event; a stuck `pending` order is
   reported as failed only after the reporting window, never as paid.
 - No refusal endpoint exists in the contract, so a supplier refusal is recorded locally and expressed
