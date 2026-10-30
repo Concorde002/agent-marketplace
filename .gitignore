@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env
+.env.*
+.dev.vars
+.dev.vars.*
+.wrangler/
+.agent/
+.DS_Store
+coverage/
+*.log
+/Build the Arsenal*.pdf

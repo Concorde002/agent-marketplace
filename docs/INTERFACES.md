@@ -1,0 +1,39 @@
+# Workstream boundaries, draft v0.1
+
+Owner: platform. `src/contracts.ts` defines draft TypeScript signatures. They are development contracts, not runtime validation. `GET /openapi.json` currently describes route intent and marks business routes unimplemented; complete request/response schemas before calling it a finished client integration.
+
+## Platform to sourcing
+
+Platform authenticates and authorizes a request, then calls `SourcingService.discover(actor, request)`. Source owner returns a `DiscoveryResult` with status, ranked candidates, evidence, and source failures. Platform owns storing/distributing job state; sourcing must not create a second order database.
+
+The asynchronous transport is `POST /v1/requests/{requestId}/discover` returning a discovery ID, followed by `GET /v1/discoveries/{discoveryId}`. Platform owner must implement a persistent job/step runner; the interface does not create one automatically.
+
+Source owner supplies `MatchingService.rankEvidence(request, candidates)` and `rankOffers(request, offers)`. Candidate inputs contain no platform-membership flag. Identity-to-account lookup occurs after evidence ranking.
+
+## Platform to agent clients
+
+Agent owner exposes tool calls for the HTTP equivalents of `PlatformService`: registration, requests, discovery, quote requests, offers, acceptance, settlement, order status, and authorized events. No business logic is duplicated in an MCP adapter.
+
+Credentials map to trusted `ActorContext` on the server. Ignore/reject client-supplied actor IDs as authority. Operator grants bound registration mandates. Money uses integer minor units; every offer has one currency and an immutable offer ID. Validate quantities, deadlines, ownership, policies, and every required field at runtime.
+
+The agents use separate credentials and contexts. Supplier polls `GET /v1/events?after=cursor` while running. Events include a request ID and a resource ID. Platform must provide a scoped payload/read mechanism for the request or offer behind each event before client integration; adding those read endpoints is a coordinated next contract change. Do not assume the current draft alone contains enough information to negotiate.
+
+MCP/custom-tool support for the named clients is unverified. Implement one demonstrated transport first.
+
+## Orders, payment, notifications
+
+Both sides accept the same current offer. Counteroffers make previous unagreed revisions stale. Once agreed, terms are immutable and one order exists. Platform atomically enforces one close and supplier capacity.
+
+Offer `deliveredTotal` includes tax and delivery; `taxMinor` and `deliveryMinor` are included components, not additional charges. Reject inconsistent totals. Price, stock, and delivery declarations are demo supplier terms, not inferred facts about the real company.
+
+Platform owns sandbox payment, signature-verified provider updates, and demo documents. Agent owner implements `NotificationService.notifyOrder(order)` against a controlled recipient mapping outside agent payloads. The first implementation must coordinate injection and persistent retry/outbox ownership with platform. No claim of seller payout, tax invoicing, physical fulfillment, or profit follows from a sandbox charge.
+
+## Independent tests and shared fixtures
+
+Each owner tests its actual module with disposable fixtures in `tests/platform/`, `tests/agents/`, or `tests/sourcing/`. Integration tests live in `tests/integration/`, owned by Jenya + Codex with cooperation from the others. Test doubles are local test utilities and never become production fake providers.
+
+Use `npm run test:platform`, `npm run test:agents`, `npm run test:sourcing`, and `npm run test:e2e`. All compile the full project so type-level interface drift fails early. Initial TODOs must become substantive tests as features arrive; TODOs are not independent verification.
+
+## Changing a boundary
+
+Propose the required fields/signature/read route in a PR or issue. Platform owner updates contracts and API description; affected owner updates its consumer in the same coordinated increment. Keep main compiling. This draft deliberately does not pretend that persistence, identity verification, JSON schemas, and event delivery have already been implemented.
