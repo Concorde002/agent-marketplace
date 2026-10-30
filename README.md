@@ -6,6 +6,8 @@ Working label, not a final product name. Backend-only hackathon project for agen
 
 Start with the [full team brief](TEAM_BRIEF.md), then [agent instructions](AGENTS.md), [interfaces](docs/INTERFACES.md), and [shared status](docs/STATUS.md).
 
+Jenya's sourcing assistant starts with the [focused handover and kickoff prompt](docs/handoffs/live-sourcing.md).
+
 ## Three owners
 
 | Workstream | Owner | Code | Status |

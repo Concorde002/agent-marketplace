@@ -34,6 +34,8 @@ The independent workstreams can run in parallel, but the final product must be i
 
 Jenya coordinates the cross-workstream demo and leads final acceptance. Each owner submits small PRs with independent verification; the platform owner handles shared wiring/contracts and the integrated status document. Merge reviewed increments throughout the build rather than assigning Jenya three finished branches to combine at the end.
 
+Recommended merge captain: the platform/backend teammate. Assign the actual human/handle before merges start; another teammate reviews each non-trivial change. Coding assistants can prepare branches and PRs within their assigned authorization, but must not treat this recommendation as permission to merge. Jenya can act as the integrator if the team agrees and the authorization is explicit.
+
 ## Shared context upkeep
 
 - Owner updates workstream status in every behavior-changing PR.

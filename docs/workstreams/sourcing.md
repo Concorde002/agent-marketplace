@@ -2,6 +2,8 @@
 
 Human owner: Jenya, using Codex. Agent must read root `AGENTS.md` first.
 
+Implementation can be handed to Jenya's Azure coding assistant. Read the [focused handover and copy-paste kickoff prompt](../handoffs/live-sourcing.md) for the first deliverable, PR sequence, and merge boundaries. The workstream owner remains Jenya regardless of the coding assistant used.
+
 ## Owns
 
 `src/sourcing/`, `src/matching/`, `tests/sourcing/`, `tests/integration/`, case research, and live demo acceptance.
