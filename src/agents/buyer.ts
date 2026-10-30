@@ -25,6 +25,10 @@ export const MAX_DISCOVERY_POLLS = 20;
 export const MAX_QUOTE_CANDIDATES = 5;
 /** Safety bound so a static clock can never make the event loop spin forever. */
 export const MAX_EVENT_POLLS = 1_000;
+/** Bounded waits for a just-settled order to reach a terminal payment status. */
+export const PAYMENT_POLL_ATTEMPTS = 5;
+/** Delay between those reads; a sandbox payment normally resolves on the first read. */
+export const PAYMENT_POLL_DELAY_MS = 400;
 
 export interface BuyerOrderOutcome {
   status: "agreed_and_paid" | "payment_failed";
@@ -499,7 +503,7 @@ export class BuyerRunner {
       });
     }
 
-    const order = await this.client.getOrder(orderId);
+    const order = await this.awaitTerminalPayment(orderId);
     if (order.acceptedOffer.requestId !== context.request.id) {
       return this.finishNoMatch(
         "platform_error",
@@ -510,6 +514,21 @@ export class BuyerRunner {
     const outcome = buildOrderOutcome(order);
     context.lastOutcome = outcome;
     return this.emitOutcome(outcome);
+  }
+
+  private async awaitTerminalPayment(orderId: string): Promise<Order> {
+    let order = await this.client.getOrder(orderId);
+    for (
+      let attempt = 0;
+      attempt < PAYMENT_POLL_ATTEMPTS && !isTerminalPayment(order);
+      attempt += 1
+    ) {
+      // A sandbox payment can still be settling when the agreement is read. Reporting
+      // "payment failed" for a pending charge would be a false negative.
+      await this.sleep(PAYMENT_POLL_DELAY_MS);
+      order = await this.client.getOrder(orderId);
+    }
+    return order;
   }
 
   private async finishNoMatch(
@@ -629,6 +648,10 @@ function buildOrderOutcome(order: Order): BuyerOrderOutcome {
     order,
     message: `payment failed — ${reason}; ${details}`,
   };
+}
+
+function isTerminalPayment(order: Order): boolean {
+  return order.paymentStatus === "succeeded" || order.paymentStatus === "failed";
 }
 
 function buildNoMatchOutcome(

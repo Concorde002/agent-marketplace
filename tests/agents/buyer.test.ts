@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import type {
   Offer,
+  Order,
   ParticipantEvent,
   RegistrationInput,
   SourcingRequest,
@@ -131,6 +132,7 @@ interface RunnerHarnessOptions {
   discoveryTimeoutMs?: number;
   store?: MemoryAgentStateStore;
   knownParticipantId?: string;
+  client?: PlatformClient;
 }
 
 async function createSupplier(
@@ -156,10 +158,12 @@ async function createSupplier(
 
 function createRunnerHarness(options: RunnerHarnessOptions): RunnerHarness {
   const config = buyerConfig(options.platform, options.configOverrides ?? {});
-  const client = new PlatformClient({
-    baseUrl: options.platform.url,
-    token: config.token,
-  });
+  const client =
+    options.client ??
+    new PlatformClient({
+      baseUrl: options.platform.url,
+      token: config.token,
+    });
   const manual = createManualClock();
   const reports: BuyerOutcome[] = [];
   const sleep: SleepFn = async (ms) => {
@@ -792,3 +796,50 @@ function supplierIdOf(platform: FakePlatform): string {
   }
   return participantId;
 }
+
+/** Returns a still-pending payment on the first read, like a settling sandbox charge. */
+class PendingFirstClient extends PlatformClient {
+  reads = 0;
+  private pendingReads = 1;
+
+  override async getOrder(orderId: string): Promise<Order> {
+    this.reads += 1;
+    const order = await super.getOrder(orderId);
+    if (this.pendingReads > 0 && order.paymentStatus === "succeeded") {
+      this.pendingReads -= 1;
+      const { sandboxPaymentId: _settled, ...withoutReference } = order;
+      return { ...withoutReference, paymentStatus: "pending" };
+    }
+    return order;
+  }
+}
+
+test("a pending sandbox payment is re-read before reporting a failure", async () => {
+  const platform = await createFakePlatform({
+    runningPolls: 0,
+    candidates: [candidate("supplier.example", 1)],
+  });
+  try {
+    const supplier = await createSupplier(platform, "supplier.example", 100_000);
+    const config = buyerConfig(platform, {});
+    const client = new PendingFirstClient({
+      baseUrl: platform.url,
+      token: config.token,
+    });
+    const harness = createRunnerHarness({
+      platform,
+      supplier,
+      client,
+      supplierIdsByDomain: { "supplier.example": supplierIdOf(platform) },
+    });
+
+    const outcome = requirePaid(await harness.runner.run());
+
+    assert.match(outcome.message, /^agreed and sandbox-paid/);
+    assert.equal(outcome.order.paymentStatus, "succeeded");
+    assert.ok(client.reads >= 2, "the order must be read again after a pending status");
+    assert.equal(platform.state.paymentAttempts.get(outcome.order.id), 1);
+  } finally {
+    await platform.close();
+  }
+});
